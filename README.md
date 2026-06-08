@@ -137,17 +137,25 @@ hashes + model + step config. On build:
 | `loom prompts` | List the prompt library |
 | `loom snapshot -m "msg"` | Commit a git snapshot · `loom snapshot list` |
 | `loom export <workflow>` | Write a shareable self-contained HTML file |
+| `loom diff <workflow> <step>` | Diff a step's current output vs its previous version (`--from`, `--to`) |
 | `loom serve [--port 4319]` | Launch the local web UI with live updates |
 
 ## The web UI
 
 `loom serve` starts a local server (no external services) with:
 
-- **Workflows** — see the step DAG and per-step freshness; build/rebuild with a
-  live streamed log; view rendered outputs; one-click HTML export.
+- **Workflows** — an interactive **DAG view**: each step is a node laid out by
+  dependency rank, color-coded by freshness (fresh / stale / unbuilt / error)
+  and animated live as a build runs. Click a node to inspect it:
+  - **Output** — the compiled artifact, rendered.
+  - **Diff** — pick any two versions of that step's output and see a
+    line-level diff (with collapsed unchanged context). Versions accumulate as
+    you change inputs/prompts and rebuild.
+  Build/rebuild stream a live log; one-click HTML export.
 - **Inputs / Prompts** — browse and edit managed files; saves broadcast to all
   connected clients over WebSocket (the first step toward live collaboration).
-- **Artifacts** — every compiled output with full provenance.
+- **Artifacts** — every compiled output with full provenance, plus a
+  "diff vs previous" button per artifact.
 - **Snapshots** — create and browse git snapshots.
 
 ## Layout under `.loom/`
@@ -163,9 +171,10 @@ hashes + model + step config. On build:
 
 ## Roadmap (staged)
 
-- **Now:** git-backed snapshots; live WebSocket updates across clients.
-- **Next:** CRDT/Yjs co-editing layered over the event log; richer DAG
-  visualization; per-artifact diffs; remote sharing.
+- **Now:** git-backed snapshots; live WebSocket updates across clients;
+  interactive DAG view; per-artifact version history and diffs.
+- **Next:** CRDT/Yjs co-editing layered over the event log; remote sharing of
+  exports; diffing across snapshots.
 
 ## Tech
 

@@ -74,6 +74,13 @@ export class Store {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
+  /** Version history for one step (newest first) — the basis for diffs. */
+  listStepArtifacts(workflowId: string, stepId: string): Artifact[] {
+    return this.listArtifacts().filter(
+      (a) => a.workflowId === workflowId && a.stepId === stepId,
+    );
+  }
+
   /** Write the human-browsable copy of an output under outputs/<wf>/<output>. */
   materialize(workflowId: string, output: string, content: string): string {
     const path = join(this.outputsDir, workflowId, output);

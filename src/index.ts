@@ -16,3 +16,5 @@ export { scaffoldWorkspace } from "./core/scaffold.js";
 export { snapshot, listSnapshots, isGitRepo } from "./core/snapshot.js";
 export { exportWorkflowHtml } from "./core/exporter.js";
 export { renderMarkdown } from "./core/markdown.js";
+export { diffLines, diffStats } from "./core/diff.js";
+export type { DiffOp, DiffOpType, DiffStats } from "./core/diff.js";

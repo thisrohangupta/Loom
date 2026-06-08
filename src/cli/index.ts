@@ -8,6 +8,7 @@ import { scaffoldWorkspace } from "../core/scaffold.js";
 import { snapshot as gitSnapshot, listSnapshots } from "../core/snapshot.js";
 import { exportWorkflowHtml } from "../core/exporter.js";
 import { dagEdges } from "../core/graph.js";
+import { diffLines, diffStats } from "../core/diff.js";
 
 const c = {
   reset: "\x1b[0m",
@@ -56,6 +57,8 @@ async function main() {
       return cmdSnapshot(positionals, flags);
     case "export":
       return cmdExport(positionals[0]);
+    case "diff":
+      return cmdDiff(positionals, flags);
     case "serve":
       return cmdServe(flags);
     case "version":
@@ -89,6 +92,7 @@ ${c.bold("Commands:")}
   snapshot -m "message"    Commit a git snapshot of the workspace
   snapshot list            List recent snapshots
   export <workflow>        Write a shareable self-contained HTML file
+  diff <workflow> <step>   Diff a step's current output vs its previous version
   serve [--port 4319]      Launch the local web UI (with live updates)
   version                  Print version
 
@@ -221,6 +225,52 @@ function cmdExport(workflow: string | undefined) {
   for (const id of targets) {
     const { path } = exportWorkflowHtml(ws, store, id);
     console.log(c.green("✓ exported ") + path);
+  }
+}
+
+function cmdDiff(positionals: string[], flags: Record<string, string | boolean>) {
+  const { store } = openWorkspace();
+  const [workflow, step] = positionals;
+  if (!workflow || !step) {
+    console.error(c.red("Usage: loom diff <workflow> <step> [--from <key>] [--to <key>]"));
+    process.exitCode = 1;
+    return;
+  }
+  const versions = store.listStepArtifacts(workflow, step);
+  if (!versions.length) {
+    console.log(c.dim(`No artifacts for ${workflow}/${step} yet — build it first.`));
+    return;
+  }
+  const toKey = (flags.to as string) ?? store.getStepArtifactKey(workflow, step) ?? versions[0].key;
+  let fromKey = flags.from as string | undefined;
+  if (!fromKey) {
+    const idx = versions.findIndex((v) => v.key === toKey);
+    const prev = idx >= 0 ? versions[idx + 1] : versions.find((v) => v.key !== toKey);
+    if (!prev) {
+      console.log(c.dim("Only one version of this artifact — nothing to diff. Change an input and rebuild."));
+      return;
+    }
+    fromKey = prev.key;
+  }
+  if (!store.hasArtifact(fromKey) || !store.hasArtifact(toKey)) {
+    console.error(c.red("One or both artifact versions were not found."));
+    process.exitCode = 1;
+    return;
+  }
+  const ops = diffLines(store.getArtifactContent(fromKey), store.getArtifactContent(toKey));
+  const stats = diffStats(ops);
+  console.log(
+    `${c.dim(fromKey.slice(0, 8))} ${c.dim("→")} ${c.dim(toKey.slice(0, 8))}  ` +
+      `${c.green("+" + stats.added)} ${c.red("-" + stats.removed)}`,
+  );
+  if (!stats.added && !stats.removed) {
+    console.log(c.dim("(identical)"));
+    return;
+  }
+  for (const op of ops) {
+    if (op.type === "add") console.log(c.green("+ " + op.text));
+    else if (op.type === "del") console.log(c.red("- " + op.text));
+    else console.log(c.dim("  " + op.text));
   }
 }
 

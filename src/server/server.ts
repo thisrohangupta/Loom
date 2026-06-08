@@ -11,6 +11,7 @@ import { dagEdges } from "../core/graph.js";
 import { snapshot as gitSnapshot, listSnapshots } from "../core/snapshot.js";
 import { exportWorkflowHtml } from "../core/exporter.js";
 import { listFilesRecursive } from "../core/workspace.js";
+import { diffLines, diffStats } from "../core/diff.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = resolve(__dirname, "../web/public");
@@ -194,6 +195,39 @@ async function api(
     const key = store.getStepArtifactKey(workflow, step);
     if (!key || !store.hasArtifact(key)) return sendJson(res, 404, { error: "not built" });
     return sendJson(res, 200, { artifact: store.getArtifact(key), content: store.getArtifactContent(key) });
+  }
+
+  if (path === "/api/artifact-history" && method === "GET") {
+    const { store } = ctx();
+    const workflow = url.searchParams.get("workflow") ?? "";
+    const step = url.searchParams.get("step") ?? "";
+    const currentKey = store.getStepArtifactKey(workflow, step);
+    const versions = store.listStepArtifacts(workflow, step).map((a) => ({
+      key: a.key,
+      createdAt: a.createdAt,
+      contentBytes: a.contentBytes,
+      model: a.model,
+      usage: a.usage,
+      status: a.status,
+      current: a.key === currentKey,
+    }));
+    return sendJson(res, 200, { workflow, step, currentKey, versions });
+  }
+
+  if (path === "/api/diff" && method === "GET") {
+    const { store } = ctx();
+    const fromKey = url.searchParams.get("from") ?? "";
+    const toKey = url.searchParams.get("to") ?? "";
+    if (!store.hasArtifact(fromKey) || !store.hasArtifact(toKey)) {
+      return sendJson(res, 404, { error: "one or both artifact versions not found" });
+    }
+    const ops = diffLines(store.getArtifactContent(fromKey), store.getArtifactContent(toKey));
+    return sendJson(res, 200, {
+      from: store.getArtifact(fromKey),
+      to: store.getArtifact(toKey),
+      ops,
+      stats: diffStats(ops),
+    });
   }
 
   if (path === "/api/status" && method === "GET") {
