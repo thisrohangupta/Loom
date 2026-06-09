@@ -3,7 +3,15 @@ import { readFile, readFileSync, existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve, extname, sep } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
-import { loadWorkspace, resolveDirs, type Workspace, type ResolvedDirs, defaultModel } from "../core/workspace.js";
+import {
+  loadWorkspace,
+  resolveDirs,
+  writeConfig,
+  writeConfigRaw,
+  type Workspace,
+  type ResolvedDirs,
+  defaultModel,
+} from "../core/workspace.js";
 import { Store } from "../core/store.js";
 import { Engine } from "../core/engine.js";
 import { listPrompts } from "../core/prompts.js";
@@ -160,6 +168,31 @@ async function api(
     return sendJson(res, 200, { prompts: listPrompts(dirs).map((p) => ({ name: p.name, content: p.content })) });
   }
 
+  if (path === "/api/context" && method === "GET") {
+    const { dirs } = ctx();
+    const rel = dirs.context.split(sep).pop() ?? "context";
+    const files = listFilesRecursive(dirs.context).map((f) => `${rel}/${f}`);
+    return sendJson(res, 200, { files, dir: rel });
+  }
+
+  if (path === "/api/config" && method === "GET") {
+    const { ws } = ctx();
+    return sendJson(res, 200, { config: ws.config, raw: readFileSync(ws.configPath, "utf8") });
+  }
+
+  if (path === "/api/config" && method === "PUT") {
+    const { ws, store } = ctx();
+    const body = JSON.parse(await readBody(req)) as { config?: unknown; raw?: string };
+    try {
+      if (typeof body.raw === "string") writeConfigRaw(ws, body.raw);
+      else writeConfig(ws, body.config as never);
+    } catch (err) {
+      return sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    }
+    broadcast(store.appendEvent("file.changed", { path: "loom.yaml" }));
+    return sendJson(res, 200, { ok: true });
+  }
+
   if (path === "/api/file" && method === "GET") {
     const { ws } = ctx();
     const rel = url.searchParams.get("path") ?? "";
@@ -182,6 +215,22 @@ async function api(
     writeFileSync(file, body.content);
     const event = store.appendEvent("file.changed", { path: body.path });
     broadcast(event);
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (path === "/api/file" && method === "DELETE") {
+    const { ws, dirs, store } = ctx();
+    const rel = url.searchParams.get("path") ?? "";
+    const file = safeJoin(ws.root, rel);
+    const allowed = [dirs.inputs, dirs.prompts, dirs.context];
+    if (!allowed.some((d) => file.startsWith(d + sep))) {
+      return sendJson(res, 403, { error: "only files under inputs/, prompts/, context/ can be deleted" });
+    }
+    if (existsSync(file)) {
+      const { rmSync } = await import("node:fs");
+      rmSync(file);
+    }
+    broadcast(store.appendEvent("file.changed", { path: rel, deleted: true }));
     return sendJson(res, 200, { ok: true });
   }
 

@@ -219,6 +219,7 @@ async function render() {
   if (view === "workflows") return renderWorkflows();
   if (view === "metrics") return renderMetrics();
   if (view === "inputs") return renderInputs();
+  if (view === "context") return renderContext();
   if (view === "prompts") return renderPrompts();
   if (view === "artifacts") return renderArtifacts();
   if (view === "snapshots") return renderSnapshots();
@@ -314,6 +315,16 @@ async function renderWorkflows() {
   dag.nodes.clear();
   dag.detailEls.clear();
 
+  const newWfBtn = el("button", { class: "btn small" }, "+ New workflow");
+  newWfBtn.onclick = () => newWorkflow();
+  const yamlBtn = el("button", { class: "btn ghost small" }, "Edit loom.yaml");
+  yamlBtn.onclick = () => editConfigYaml();
+  main.append(el("div", { class: "row toolbar" }, newWfBtn, yamlBtn));
+
+  if (!workspace.workflows.length) {
+    main.append(el("p", { class: "empty" }, "No workflows yet — create one with “+ New workflow”."));
+  }
+
   for (const wf of workspace.workflows) {
     const logEl = el("div", { class: "log", style: "display:none" });
     const setLog = () => {
@@ -343,6 +354,8 @@ async function renderWorkflows() {
       try { const { url } = await api.post("/api/export", { workflow: wf.id }); window.open(url, "_blank"); }
       catch (err) { toast(err.message); }
     };
+    const addStepBtn = el("button", { class: "btn ghost small" }, "+ Step");
+    addStepBtn.onclick = () => addStep(wf.id);
 
     const dagWrap = el("div", { class: "dag" }, renderDagSvg(wf));
     const detail = el("div", { class: "detail", style: "display:none" });
@@ -353,7 +366,7 @@ async function renderWorkflows() {
         el("div", { class: "row" },
           el("h2", {}, wf.id),
           el("span", { class: "spacer" }),
-          buildBtn, forceBtn, exportBtn,
+          addStepBtn, buildBtn, forceBtn, exportBtn,
         ),
         wf.description ? el("p", { class: "muted" }, wf.description) : null,
         el("div", { class: "legend" },
@@ -372,6 +385,120 @@ async function renderWorkflows() {
 
 function legendDot(cls, label) {
   return el("span", { class: "legend-item" }, el("span", { class: `legend-dot ${cls}` }), label);
+}
+
+// ---- authoring: workflows, steps, raw config ----
+function modal(title, body, onSave, saveLabel = "Save") {
+  const err = el("div", { class: "banner", style: "display:none" });
+  const overlay = el("div", { class: "overlay" });
+  const saveB = el("button", { class: "btn" }, saveLabel);
+  const cancelB = el("button", { class: "btn ghost" }, "Cancel");
+  const close = () => overlay.remove();
+  cancelB.onclick = close;
+  saveB.onclick = async () => {
+    err.style.display = "none";
+    try {
+      const ok = await onSave();
+      if (ok !== false) close();
+    } catch (e) {
+      err.textContent = e.message || String(e);
+      err.style.display = "block";
+    }
+  };
+  overlay.append(el("div", { class: "modal" },
+    el("div", { class: "row" }, el("h2", {}, title)),
+    err, body,
+    el("div", { class: "row", style: "justify-content:flex-end;gap:.5rem;margin-top:1rem" }, cancelB, saveB),
+  ));
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  document.body.append(overlay);
+}
+
+async function refreshAndRender() {
+  workspace = await api.get("/api/workspace");
+  render();
+}
+
+async function loadConfig() {
+  return (await api.get("/api/config")).config;
+}
+
+async function newWorkflow() {
+  const id = prompt("New workflow id", "my-workflow");
+  if (!id) return;
+  const config = await loadConfig();
+  if ((config.workflows || []).some((w) => w.id === id)) { toast("That id already exists."); return; }
+  config.workflows = config.workflows || [];
+  config.workflows.push({ id: id.trim(), description: "", steps: [] });
+  try { await api.put("/api/config", { config }); toast("Workflow created"); refreshAndRender(); }
+  catch (err) { toast(err.message); }
+}
+
+function field(labelText, control, hint) {
+  return el("label", { class: "field" },
+    el("span", { class: "field-label" }, labelText),
+    control,
+    hint ? el("span", { class: "field-hint" }, hint) : null);
+}
+
+async function addStep(wfId) {
+  const config = await loadConfig();
+  const wf = config.workflows.find((w) => w.id === wfId);
+  if (!wf) return;
+
+  const id = el("input", { class: "text", placeholder: "e.g. summarize" });
+  const type = el("select", { class: "vers" }, el("option", { value: "inference" }, "inference"), el("option", { value: "agent" }, "agent"));
+  const promptFile = el("input", { class: "text", placeholder: "prompt file in prompts/ (optional)" });
+  const body = el("textarea", { class: "editor", style: "min-height:7rem", placeholder: "inline prompt / agent instructions (optional). Use {{inputs}} and {{var}}." });
+  const inputs = el("input", { class: "text", placeholder: "inputs/*.md, step:other, context:style" });
+  const output = el("input", { class: "text", placeholder: "e.g. result.md" });
+  const model = el("input", { class: "text", placeholder: "(optional) e.g. claude-opus-4-8" });
+  const agentDir = el("input", { class: "text", placeholder: "(agent) working dir, e.g. site" });
+  const agentRow = field("Agent working dir", agentDir);
+  agentRow.style.display = "none";
+  type.onchange = () => { agentRow.style.display = type.value === "agent" ? "" : "none"; };
+
+  const form = el("div", { class: "form" },
+    field("Step id", id),
+    field("Type", type),
+    field("Prompt file", promptFile, "a file in prompts/ — or use the inline box below"),
+    field("Inline prompt / instructions", body),
+    field("Inputs (comma-separated)", inputs),
+    field("Output file", output),
+    field("Model", model),
+    agentRow,
+  );
+
+  modal(`Add step to “${wfId}”`, form, async () => {
+    const step = { id: id.value.trim(), type: type.value, output: output.value.trim() };
+    if (!step.id || !step.output) throw new Error("Step id and output are required.");
+    if (model.value.trim()) step.model = model.value.trim();
+    const inps = inputs.value.split(",").map((s) => s.trim()).filter(Boolean);
+    if (inps.length) step.inputs = inps;
+    if (type.value === "inference") {
+      if (promptFile.value.trim()) step.prompt = promptFile.value.trim();
+      else if (body.value.trim()) step.promptText = body.value;
+    } else {
+      if (body.value.trim()) step.instructions = body.value;
+      else if (promptFile.value.trim()) step.prompt = promptFile.value.trim();
+      if (agentDir.value.trim()) step.agentDir = agentDir.value.trim();
+    }
+    wf.steps.push(step);
+    await api.put("/api/config", { config }); // server validates; throws on bad config
+    toast("Step added");
+    refreshAndRender();
+  }, "Add step");
+}
+
+async function editConfigYaml() {
+  const { raw } = await api.get("/api/config");
+  const ta = el("textarea", { class: "editor", style: "min-height:55vh" });
+  ta.value = raw;
+  modal("Edit loom.yaml", el("div", { class: "form" }, field("Workspace config (validated on save)", ta)), async () => {
+    await api.put("/api/config", { raw: ta.value }); // throws on invalid → shown in modal
+    toast("Config saved");
+    refreshAndRender();
+  });
 }
 
 async function selectStep(wf, stepId) {
@@ -504,8 +631,9 @@ function renderDiffOps(ops) {
   return wrap;
 }
 
-// ---- file editors (inputs / prompts) ----
-async function renderFileEditor(title, files, opts = {}) {
+// ---- file editors (inputs / context / prompts) ----
+// items: [{ label, path }]; dir: relative managed dir ("inputs"/"context"/"prompts")
+function renderFileEditor(title, items, dir, rerender) {
   main.replaceChildren(el("h1", { class: "page" }, title));
   const editorCard = el("div", { class: "card", style: "display:none" });
   const listCard = el("div", { class: "card" });
@@ -533,10 +661,31 @@ async function renderFileEditor(title, files, opts = {}) {
     editorCard.style.display = "block";
   };
 
-  if (!files.length) list.append(el("li", { class: "empty" }, "Nothing here yet."));
-  for (const f of files) {
-    const path = opts.toPath ? opts.toPath(f) : f;
-    list.append(el("li", { onclick: () => openFile(path) }, el("span", { class: "fname" }, opts.label ? opts.label(f) : f)));
+  const newBtn = el("button", { class: "btn small" }, "+ New");
+  newBtn.onclick = async () => {
+    let name = prompt(`New file name in ${dir}/`, "untitled.md");
+    if (!name) return;
+    if (!/\.[a-z0-9]+$/i.test(name)) name += ".md";
+    const path = `${dir}/${name}`;
+    try {
+      await api.put("/api/file", { path, content: "" });
+      await rerender();
+      openFile(path);
+    } catch (err) { toast(err.message); }
+  };
+  listCard.append(el("div", { class: "row" }, el("strong", {}, `${dir}/`), el("span", { class: "spacer" }), newBtn));
+
+  if (!items.length) list.append(el("li", { class: "empty" }, "Nothing here yet — create one with “+ New”."));
+  for (const it of items) {
+    const del = el("button", { class: "btn ghost small", title: "delete" }, "✕");
+    del.onclick = async (ev) => {
+      ev.stopPropagation();
+      if (!confirm(`Delete ${it.path}?`)) return;
+      try { await api.send("DELETE", `/api/file?path=${encodeURIComponent(it.path)}`); await rerender(); }
+      catch (err) { toast(err.message); }
+    };
+    list.append(el("li", { onclick: () => openFile(it.path) },
+      el("span", { class: "fname" }, it.label), el("span", { class: "spacer" }), del));
   }
   listCard.append(list);
   main.append(listCard, editorCard);
@@ -544,15 +693,17 @@ async function renderFileEditor(title, files, opts = {}) {
 
 async function renderInputs() {
   const { files } = await api.get("/api/inputs");
-  await renderFileEditor("Inputs", files);
+  renderFileEditor("Inputs", files.map((f) => ({ label: f, path: f })), "inputs", renderInputs);
+}
+
+async function renderContext() {
+  const { files, dir } = await api.get("/api/context");
+  renderFileEditor("Context", files.map((f) => ({ label: f, path: f })), dir || "context", renderContext);
 }
 
 async function renderPrompts() {
   const { prompts } = await api.get("/api/prompts");
-  await renderFileEditor("Prompts", prompts, {
-    label: (p) => p.name,
-    toPath: (p) => `prompts/${p.name}`,
-  });
+  renderFileEditor("Prompts", prompts.map((p) => ({ label: p.name, path: `prompts/${p.name}` })), "prompts", renderPrompts);
 }
 
 async function renderArtifacts() {

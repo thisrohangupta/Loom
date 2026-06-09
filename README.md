@@ -170,9 +170,13 @@ hashes + model + step config. On build:
   - **Diff** — pick any two versions of that step's output and see a
     line-level diff (with collapsed unchanged context). Versions accumulate as
     you change inputs/prompts and rebuild.
-  Build/rebuild stream a live log; one-click HTML export.
-- **Inputs / Prompts** — browse and edit managed files; saves broadcast to all
-  connected clients over WebSocket (the first step toward live collaboration).
+  Build/rebuild stream a live log; one-click HTML export. **Author right here:**
+  create a new workflow, add steps with a form, or edit `loom.yaml` directly
+  (validated on save).
+- **Metrics** — tokens, model spend, and the headline **$ saved by caching**,
+  refreshed live as you build.
+- **Inputs / Context / Prompts** — browse, **create**, edit, and delete managed
+  files; saves broadcast to all connected clients over WebSocket.
 - **Artifacts** — every compiled output with full provenance, plus a
   "diff vs previous" button per artifact.
 - **Snapshots** — create and browse git snapshots.
