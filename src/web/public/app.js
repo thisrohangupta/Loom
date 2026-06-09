@@ -280,6 +280,7 @@ async function render() {
   if (view === "prompts") return renderPrompts();
   if (view === "artifacts") return renderArtifacts();
   if (view === "snapshots") return renderSnapshots();
+  if (view === "share") return renderShare();
 }
 
 // ---- DAG layout ----
@@ -870,6 +871,56 @@ async function renderMetrics() {
     el("p", { class: "muted" },
       "“Saved by caching” is the model spend avoided by serving unchanged steps from cache instead of recomputing them — the core of treating LLM work like a build."),
   );
+}
+
+function shareLinkRow(url) {
+  const full = location.origin + url;
+  const input = el("input", { class: "text", readonly: "readonly", value: full, style: "flex:1;font-size:.82rem" });
+  const copy = el("button", { class: "btn ghost small" }, "Copy");
+  copy.onclick = async () => {
+    try { await navigator.clipboard.writeText(full); toast("Link copied"); }
+    catch { input.select(); document.execCommand?.("copy"); toast("Link copied"); }
+  };
+  const open = el("a", { class: "btn ghost small", href: url, target: "_blank" }, "Open");
+  const dl = el("a", { class: "btn ghost small", href: url, download: "" }, "Download");
+  return el("div", { class: "row share-link" }, input, copy, open, dl);
+}
+
+async function renderShare() {
+  main.replaceChildren(el("h1", { class: "page" }, "Share"));
+  main.append(el("p", { class: "muted" },
+    "Exports are self-contained HTML — open offline, email them, or host anywhere. The links below work while this local server runs."));
+
+  const allBtn = el("button", { class: "btn" }, "Export everything");
+  const allRow = el("div", {});
+  allBtn.onclick = async () => {
+    try {
+      const { indexUrl, pages } = await api.post("/api/export-all", {});
+      allRow.replaceChildren(shareLinkRow(indexUrl));
+      toast(`Exported ${pages.length} workflow${pages.length === 1 ? "" : "s"}`);
+    } catch (err) { toast(err.message); }
+  };
+  main.append(el("div", { class: "card" },
+    el("div", { class: "row" }, el("strong", {}, "Whole workspace"),
+      el("span", { class: "muted" }, "one index linking every compiled output"),
+      el("span", { class: "spacer" }), allBtn),
+    allRow));
+
+  for (const wf of workspace.workflows) {
+    const linkRow = el("div", {});
+    const btn = el("button", { class: "btn small" }, "Export & link");
+    btn.onclick = async () => {
+      try {
+        const { url } = await api.post("/api/export", { workflow: wf.id });
+        linkRow.replaceChildren(shareLinkRow(url));
+      } catch (err) { toast(err.message); }
+    };
+    main.append(el("div", { class: "card" },
+      el("div", { class: "row" }, el("strong", {}, wf.id),
+        wf.description ? el("span", { class: "muted" }, wf.description) : null,
+        el("span", { class: "spacer" }), btn),
+      linkRow));
+  }
 }
 
 async function renderSnapshots() {

@@ -27,7 +27,8 @@ inputs/ + context/ + prompts/  ──▶  workflow (DAG of steps)  ──▶  ar
 - **Compiled outputs, like `make`.** Each step is content-hashed over its inputs
   + prompt + model; unchanged steps are **never recomputed**. Every artifact
   carries provenance (inputs, model, tokens, cost, time).
-- **Shareable results.** Export any workflow to a self-contained HTML page.
+- **Shareable results.** Export any workflow — or the whole workspace as one
+  linked index — to self-contained HTML you can open offline, email, or host.
 - **Real-time & versioned.** Live multi-user editing with presence (open the
   same input in two windows and watch edits + avatars sync), plus git snapshots
   for history. Built on an append-only event log so conflict-free (CRDT)
@@ -156,7 +157,7 @@ hashes + model + step config. On build:
 | `loom ls` | List workflows and their step DAG |
 | `loom prompts` | List the prompt library |
 | `loom snapshot -m "msg"` | Commit a git snapshot · `loom snapshot list` |
-| `loom export <workflow>` | Write a shareable self-contained HTML file |
+| `loom export [workflow]` | Write shareable HTML (no arg = every workflow + an index) |
 | `loom diff <workflow> <step>` | Diff a step's current output vs its previous version (`--from`, `--to`) |
 | `loom serve [--port 4319]` | Launch the local web UI with live updates |
 
@@ -182,6 +183,8 @@ hashes + model + step config. On build:
 - **Artifacts** — every compiled output with full provenance, plus a
   "diff vs previous" button per artifact.
 - **Snapshots** — create and browse git snapshots.
+- **Share** — export a workflow or the whole workspace to self-contained HTML;
+  copy a link, open, or download to send externally.
 
 ## Layout under `.loom/`
 

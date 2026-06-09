@@ -17,7 +17,7 @@ import { Engine } from "../core/engine.js";
 import { listPrompts } from "../core/prompts.js";
 import { dagEdges } from "../core/graph.js";
 import { snapshot as gitSnapshot, listSnapshots } from "../core/snapshot.js";
-import { exportWorkflowHtml } from "../core/exporter.js";
+import { exportWorkflowHtml, exportAllHtml } from "../core/exporter.js";
 import { listFilesRecursive } from "../core/workspace.js";
 import { diffLines, diffStats } from "../core/diff.js";
 import { selectRunners } from "../llm/runners.js";
@@ -164,8 +164,9 @@ export async function startServer({ port = 4319, mock = false }: { port?: number
     // --- exported HTML ---
     if (path.startsWith("/export/")) {
       const { store } = ctx();
-      const file = join(store.exportsDir, path.slice("/export/".length));
-      if (existsSync(file) && file.startsWith(store.exportsDir)) {
+      const rel = path.slice("/export/".length) || "index.html";
+      const file = join(store.exportsDir, rel);
+      if (existsSync(file) && file.startsWith(store.exportsDir) && statSync(file).isFile()) {
         res.writeHead(200, { "content-type": MIME[".html"] });
         return res.end(readFileSync(file));
       }
@@ -420,6 +421,13 @@ async function api(
     const { path: filePath } = exportWorkflowHtml(ws, store, body.workflow);
     broadcast(store.appendEvent("export", { workflowId: body.workflow, path: filePath }));
     return sendJson(res, 200, { path: filePath, url: `/export/${body.workflow}.html` });
+  }
+
+  if (path === "/api/export-all" && method === "POST") {
+    const { ws, store } = ctx();
+    const { indexPath, pages } = exportAllHtml(ws, store);
+    broadcast(store.appendEvent("export", { workflowId: "*", path: indexPath }));
+    return sendJson(res, 200, { indexPath, indexUrl: "/export/index.html", pages });
   }
 
   return sendJson(res, 404, { error: "unknown endpoint" });

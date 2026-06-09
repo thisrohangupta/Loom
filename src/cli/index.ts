@@ -7,7 +7,7 @@ import { listPrompts } from "../core/prompts.js";
 import { scaffoldWorkspace, scaffoldDemo } from "../core/scaffold.js";
 import { mockEnabled, selectRunners } from "../llm/runners.js";
 import { snapshot as gitSnapshot, listSnapshots } from "../core/snapshot.js";
-import { exportWorkflowHtml } from "../core/exporter.js";
+import { exportWorkflowHtml, exportAllHtml } from "../core/exporter.js";
 import { dagEdges } from "../core/graph.js";
 import { diffLines, diffStats } from "../core/diff.js";
 import { computeMetrics } from "../core/metrics.js";
@@ -272,11 +272,15 @@ function cmdSnapshot(positionals: string[], flags: Record<string, string | boole
 
 function cmdExport(workflow: string | undefined) {
   const { ws, store } = openWorkspace();
-  const targets = workflow ? [workflow] : ws.config.workflows.map((w) => w.id);
-  for (const id of targets) {
-    const { path } = exportWorkflowHtml(ws, store, id);
+  if (workflow) {
+    const { path } = exportWorkflowHtml(ws, store, workflow);
     console.log(c.green("✓ exported ") + path);
+    return;
   }
+  // No arg: export everything + an index you can share as one bundle.
+  const { indexPath, pages } = exportAllHtml(ws, store);
+  for (const p of pages) console.log(c.green("✓ exported ") + p.path);
+  console.log(c.green("✓ index ") + indexPath + c.dim("  (self-contained — open or share these files)"));
 }
 
 function cmdDiff(positionals: string[], flags: Record<string, string | boolean>) {
