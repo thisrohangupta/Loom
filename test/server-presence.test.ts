@@ -7,6 +7,9 @@ import { WebSocket } from "ws";
 import { scaffoldWorkspace } from "../src/core/scaffold.js";
 import { startServer, type ServerHandle } from "../src/server/server.js";
 
+// Keep the workspace registry out of the real ~/.loom during tests.
+process.env.LOOM_HOME = mkdtempSync(join(tmpdir(), "loom-home-"));
+
 // A tiny test client that records messages and lets a test await a predicate.
 function connect(port: number, name: string) {
   const ws = new WebSocket(`ws://localhost:${port}/ws`);

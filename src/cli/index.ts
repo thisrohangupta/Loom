@@ -65,6 +65,9 @@ async function main() {
       return cmdExport(positionals[0], flags);
     case "diff":
       return cmdDiff(positionals, flags);
+    case "workspace":
+    case "ws":
+      return cmdWorkspace(positionals, flags);
     case "serve":
       return cmdServe(flags);
     case "version":
@@ -102,6 +105,7 @@ ${c.bold("Commands:")}
   snapshot diff <a> <b> [path]  Diff tracked files across two snapshots
   export <workflow>        Write a shareable self-contained HTML file
   diff <workflow> <step>   Diff a step's current output vs its previous version
+  workspace list|add|remove  Manage the multi-workspace registry
   serve [--port 4319]      Launch the local web UI (--mock for offline demos)
   version                  Print version
 
@@ -360,6 +364,37 @@ function cmdDiff(positionals: string[], flags: Record<string, string | boolean>)
     else if (op.type === "del") console.log(c.red("- " + op.text));
     else console.log(c.dim("  " + op.text));
   }
+}
+
+async function cmdWorkspace(positionals: string[], _flags: Record<string, string | boolean>) {
+  const { listWorkspaces, addWorkspace, removeWorkspace } = await import("../core/registry.js");
+  const sub = positionals[0] ?? "list";
+  if (sub === "list" || sub === "ls") {
+    const list = listWorkspaces();
+    if (!list.length) {
+      console.log(c.dim("No workspaces registered yet. Run `loom workspace add` in a workspace."));
+      return;
+    }
+    for (const w of list) {
+      console.log(`${c.bold(w.id)}  ${c.cyan(w.name)}\n  ${c.dim(w.root)}`);
+    }
+    return;
+  }
+  if (sub === "add") {
+    const root = positionals[1] ? resolve(positionals[1]) : process.cwd();
+    const entry = addWorkspace(root);
+    console.log(`${c.green("✓")} registered ${c.bold(entry.name)} (${c.dim(entry.id)})`);
+    return;
+  }
+  if (sub === "remove" || sub === "rm") {
+    const id = positionals[1];
+    if (!id) { console.error(c.red("usage: loom workspace remove <id>")); process.exitCode = 1; return; }
+    console.log(removeWorkspace(id) ? `${c.green("✓")} removed ${id}` : c.yellow(`no workspace with id ${id}`));
+    return;
+  }
+  console.error(c.red(`Unknown workspace subcommand: ${sub}`));
+  console.log("usage: loom workspace <list | add [dir] | remove <id>>");
+  process.exitCode = 1;
 }
 
 async function cmdServe(flags: Record<string, string | boolean>) {
