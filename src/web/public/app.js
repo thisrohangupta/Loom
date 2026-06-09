@@ -116,6 +116,50 @@ function applyNodeState(key, state) {
   g.setAttribute("class", `node ${s}${key === dag.selectedKey ? " selected" : ""}`);
 }
 
+// ---- live collaboration (presence + shared editing) ----
+function loadIdentity() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("loom.user"));
+    if (saved && saved.name) return saved;
+  } catch { /* ignore */ }
+  const names = ["Maple", "Cedar", "Wren", "Onyx", "Sage", "Rowan", "Iris", "Flint", "Lark", "Juno"];
+  const colors = ["#c2643c", "#3f8f5b", "#3b6fb0", "#9c4dcc", "#c08a2c", "#1c8a8a"];
+  const me = {
+    name: names[Math.floor(Math.random() * names.length)],
+    color: colors[Math.floor(Math.random() * colors.length)],
+  };
+  localStorage.setItem("loom.user", JSON.stringify(me));
+  return me;
+}
+
+const collab = {
+  ws: null,
+  clientId: null,
+  me: loadIdentity(),
+  activePath: null,
+  onState: null,
+  onUpdate: null,
+  onPresence: null,
+};
+
+function sendCollab(obj) {
+  if (collab.ws && collab.ws.readyState === WebSocket.OPEN) collab.ws.send(JSON.stringify(obj));
+}
+function closeActiveDoc() {
+  if (collab.activePath) sendCollab({ type: "doc.close", path: collab.activePath });
+  collab.activePath = null;
+  collab.onState = collab.onUpdate = collab.onPresence = null;
+}
+function handleCollab(m) {
+  if (m.data.path !== collab.activePath) return;
+  if (m.type === "doc.state") collab.onState?.(m.data);
+  else if (m.type === "doc.update") { if (m.data.by !== collab.clientId) collab.onUpdate?.(m.data); }
+  else if (m.type === "presence") collab.onPresence?.(m.data.users);
+}
+function initials(name) {
+  return (name || "?").trim().slice(0, 2).toUpperCase();
+}
+
 // ---- websocket live updates ----
 let logSink = null; // function(text, cls) when a build log is on screen
 function connectWS() {
@@ -123,12 +167,24 @@ function connectWS() {
   const label = document.getElementById("conn-label");
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  collab.ws = ws;
   ws.onopen = () => { dot.className = "dot on"; label.textContent = "live"; };
   ws.onclose = () => {
     dot.className = "dot off"; label.textContent = "reconnecting…";
     setTimeout(connectWS, 1500);
   };
-  ws.onmessage = (ev) => handleEvent(JSON.parse(ev.data));
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === "hello") {
+      collab.clientId = m.clientId;
+      sendCollab({ type: "identify", name: collab.me.name, color: collab.me.color });
+      // re-join the doc currently open (e.g. after a reconnect)
+      if (collab.activePath) sendCollab({ type: "doc.open", path: collab.activePath });
+      return;
+    }
+    if (m.type === "doc.state" || m.type === "doc.update" || m.type === "presence") return handleCollab(m);
+    handleEvent(m);
+  };
 }
 
 function pushActivity(text) {
@@ -197,6 +253,7 @@ document.querySelectorAll(".nav").forEach((btn) =>
     btn.classList.add("active");
     view = btn.dataset.view;
     logSink = null;
+    closeActiveDoc();
     render();
   }),
 );
@@ -641,24 +698,58 @@ function renderFileEditor(title, items, dir, rerender) {
 
   let currentPath = null;
   const textarea = el("textarea", { class: "editor" });
-  const saveBtn = el("button", { class: "btn small" }, "Save");
+  const saveBtn = el("button", { class: "btn small" }, "Publish");
   const fileLabel = el("strong", {}, "");
+  const presenceEl = el("span", { class: "presence" });
+  const youChip = el("span", { class: "avatar you", style: `background:${collab.me.color}`, title: `You (${collab.me.name})` }, initials(collab.me.name));
   saveBtn.onclick = async () => {
     if (!currentPath) return;
-    try { await api.put("/api/file", { path: currentPath, content: textarea.value }); toast("Saved"); }
+    // Edits already sync live; Publish writes + emits a change event so build
+    // status and other views refresh.
+    try { await api.put("/api/file", { path: currentPath, content: textarea.value }); toast("Published"); }
     catch (err) { toast(err.message); }
   };
   editorCard.append(
-    el("div", { class: "row" }, fileLabel, el("span", { class: "spacer" }), saveBtn),
+    el("div", { class: "row" }, fileLabel, el("span", { class: "spacer" }), youChip, presenceEl, saveBtn),
     textarea,
   );
 
+  // debounced live edit broadcast
+  let editTimer = null;
+  textarea.addEventListener("input", () => {
+    if (!currentPath) return;
+    clearTimeout(editTimer);
+    editTimer = setTimeout(() => sendCollab({ type: "doc.edit", path: currentPath, content: textarea.value }), 250);
+  });
+
+  const applyRemote = (content) => {
+    const pos = textarea.selectionStart;
+    const atEnd = pos >= textarea.value.length;
+    textarea.value = content;
+    const p = atEnd ? content.length : Math.min(pos, content.length);
+    textarea.selectionStart = textarea.selectionEnd = p;
+  };
+  const renderPresence = (users) => {
+    const others = users.filter((u) => u.id !== collab.clientId);
+    presenceEl.replaceChildren(
+      ...others.map((u) => el("span", { class: "avatar", style: `background:${u.color}`, title: u.name }, initials(u.name))),
+    );
+    if (others.length) presenceEl.append(el("span", { class: "muted editing-note" }, `${others.length} other${others.length === 1 ? "" : "s"} here`));
+  };
+
   const openFile = async (relPath) => {
+    closeActiveDoc();
     const { content } = await api.get(`/api/file?path=${encodeURIComponent(relPath)}`);
     currentPath = relPath;
     fileLabel.textContent = relPath;
     textarea.value = content;
     editorCard.style.display = "block";
+    // join the collaborative session for this file
+    collab.activePath = relPath;
+    collab.onState = (d) => { if (d.content !== textarea.value) applyRemote(d.content); };
+    collab.onUpdate = (d) => applyRemote(d.content);
+    collab.onPresence = renderPresence;
+    sendCollab({ type: "doc.open", path: relPath });
   };
 
   const newBtn = el("button", { class: "btn small" }, "+ New");

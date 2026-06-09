@@ -28,9 +28,10 @@ inputs/ + context/ + prompts/  ──▶  workflow (DAG of steps)  ──▶  ar
   + prompt + model; unchanged steps are **never recomputed**. Every artifact
   carries provenance (inputs, model, tokens, cost, time).
 - **Shareable results.** Export any workflow to a self-contained HTML page.
-- **Versioned & collaborative.** Git snapshots today; the data model (an
-  append-only event log + a live WebSocket layer) is built so real-time
-  multiplayer can be layered on without a rewrite.
+- **Real-time & versioned.** Live multi-user editing with presence (open the
+  same input in two windows and watch edits + avatars sync), plus git snapshots
+  for history. Built on an append-only event log so conflict-free (CRDT)
+  co-editing can be layered on next.
 
 ## Try it in 10 seconds (no API key)
 
@@ -176,7 +177,8 @@ hashes + model + step config. On build:
 - **Metrics** — tokens, model spend, and the headline **$ saved by caching**,
   refreshed live as you build.
 - **Inputs / Context / Prompts** — browse, **create**, edit, and delete managed
-  files; saves broadcast to all connected clients over WebSocket.
+  files, with **live collaborative editing**: edits sync across clients in real
+  time and presence avatars show who else is in the file.
 - **Artifacts** — every compiled output with full provenance, plus a
   "diff vs previous" button per artifact.
 - **Snapshots** — create and browse git snapshots.
@@ -194,10 +196,11 @@ hashes + model + step config. On build:
 
 ## Roadmap (staged)
 
-- **Now:** git-backed snapshots; live WebSocket updates across clients;
-  interactive DAG view; per-artifact version history and diffs.
-- **Next:** CRDT/Yjs co-editing layered over the event log; remote sharing of
-  exports; diffing across snapshots.
+- **Now:** git snapshots; interactive DAG view; per-artifact history + diffs;
+  cost/cache-savings metrics; in-UI authoring; **live collaborative editing with
+  presence**; offline mock provider + one-command demo.
+- **Next:** conflict-free (CRDT/Yjs) concurrent editing layered over the event
+  log; remote sharing of exports; diffing across snapshots.
 
 ## Tech
 

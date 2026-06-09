@@ -103,6 +103,13 @@ input.text { font: inherit; padding: .4rem .6rem; border: 1px solid var(--line);
 .toast { position: fixed; bottom: 1.2rem; right: 1.2rem; background: var(--ink); color: #fff; padding: .6rem 1rem; border-radius: 8px; opacity: 0; transition: opacity .2s; }
 .toast.show { opacity: 1; }
 
+/* ---- collaboration presence ---- */
+.presence { display: inline-flex; align-items: center; gap: .25rem; margin: 0 .4rem; }
+.avatar { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px;
+  border-radius: 50%; color: #fff; font-size: .68rem; font-weight: 700; border: 2px solid var(--panel); }
+.avatar.you { box-shadow: 0 0 0 2px var(--accent); }
+.editing-note { font-size: .75rem; margin-left: .2rem; }
+
 /* ---- authoring: toolbar, modal, forms ---- */
 .toolbar { margin-bottom: 1rem; gap: .5rem; }
 .overlay { position: fixed; inset: 0; background: rgba(20,20,20,.4); display: flex; align-items: flex-start;

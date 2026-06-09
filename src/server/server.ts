@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readFile, readFileSync, existsSync, statSync } from "node:fs";
+import { readFile, readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve, extname, sep } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
@@ -67,8 +67,90 @@ export async function startServer({ port = 4319, mock = false }: { port?: number
       if (client.readyState === WebSocket.OPEN) client.send(data);
     }
   };
+
+  // --- live collaboration (LWW content sync + presence), keyed by file path ---
+  interface CollabUser {
+    id: string;
+    name: string;
+    color: string;
+  }
+  interface SocketState {
+    id: string;
+    user: CollabUser;
+    path: string | null;
+  }
+  const docs = new Map<string, { version: number; content: string }>();
+  const presence = new Map<string, Map<string, CollabUser>>();
+  const sockState = new WeakMap<WebSocket, SocketState>();
+  let nextId = 1;
+
+  const loadDoc = (path: string) => {
+    if (!docs.has(path)) {
+      const { ws } = ctx();
+      const abs = safeJoin(ws.root, path);
+      docs.set(path, { version: 1, content: existsSync(abs) ? readFileSync(abs, "utf8") : "" });
+    }
+    return docs.get(path)!;
+  };
+  const usersOn = (path: string): CollabUser[] => [...(presence.get(path)?.values() ?? [])];
+  const announce = (path: string) =>
+    broadcast({ type: "presence", data: { path, users: usersOn(path) } });
+  const isManaged = (path: string): boolean => {
+    const { ws, dirs } = ctx();
+    const file = safeJoin(ws.root, path);
+    return [dirs.inputs, dirs.prompts, dirs.context].some((d) => file.startsWith(d + sep));
+  };
+  const leave = (socket: WebSocket) => {
+    const st = sockState.get(socket);
+    if (st?.path && presence.has(st.path)) {
+      presence.get(st.path)!.delete(st.id);
+      announce(st.path);
+    }
+    if (st) st.path = null;
+  };
+
   wss.on("connection", (socket) => {
-    socket.send(JSON.stringify({ type: "hello", ts: new Date().toISOString() }));
+    const id = `c${nextId++}`;
+    sockState.set(socket, { id, user: { id, name: "Guest", color: "#888" }, path: null });
+    socket.send(JSON.stringify({ type: "hello", clientId: id, ts: new Date().toISOString() }));
+
+    socket.on("message", (raw) => {
+      let m: Record<string, unknown>;
+      try {
+        m = JSON.parse(raw.toString());
+      } catch {
+        return;
+      }
+      const st = sockState.get(socket);
+      if (!st) return;
+
+      if (m.type === "identify") {
+        st.user = { id: st.id, name: String(m.name ?? "Guest").slice(0, 40), color: String(m.color ?? "#888") };
+        if (st.path) announce(st.path);
+      } else if (m.type === "doc.open" && typeof m.path === "string") {
+        leave(socket);
+        st.path = m.path;
+        if (!presence.has(m.path)) presence.set(m.path, new Map());
+        presence.get(m.path)!.set(st.id, st.user);
+        const doc = loadDoc(m.path);
+        socket.send(JSON.stringify({ type: "doc.state", data: { path: m.path, content: doc.content, version: doc.version } }));
+        announce(m.path);
+      } else if (m.type === "doc.close") {
+        leave(socket);
+      } else if (m.type === "doc.edit" && typeof m.path === "string" && typeof m.content === "string") {
+        if (!isManaged(m.path)) return;
+        const doc = loadDoc(m.path);
+        doc.content = m.content;
+        doc.version++;
+        const { ws } = ctx();
+        const abs = safeJoin(ws.root, m.path);
+        mkdirSync(dirname(abs), { recursive: true });
+        writeFileSync(abs, m.content);
+        broadcast({ type: "doc.update", data: { path: m.path, content: m.content, version: doc.version, by: st.id } });
+      }
+    });
+
+    socket.on("close", () => leave(socket));
   });
 
   async function handle(req: IncomingMessage, res: ServerResponse) {
