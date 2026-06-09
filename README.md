@@ -159,6 +159,7 @@ hashes + model + step config. On build:
 | `loom snapshot -m "msg"` | Commit a git snapshot · `list` · `diff <a> <b> [path]` |
 | `loom export [workflow]` | Shareable HTML (no arg = all + index; `--bundle` = one file) |
 | `loom diff <workflow> <step>` | Diff a step's current output vs its previous version (`--from`, `--to`) |
+| `loom workspace list \| add [dir] \| remove <id>` | Manage the multi-workspace registry |
 | `loom serve [--port 4319]` | Launch the local web UI with live updates |
 
 ## The web UI
@@ -191,6 +192,13 @@ hashes + model + step config. On build:
 - **Share** — export a workflow or the whole workspace to self-contained HTML;
   copy a link, open, or download to send externally.
 
+A **workspace switcher** in the top bar hosts several workspaces from one
+`loom serve`: pick one to scope every view to it, or **+** to register another
+by path. Documents, presence, cursors, DAG focus, and build events are all
+isolated per workspace, so two teams on two workspaces never cross streams. The
+registry lives at `$LOOM_HOME/workspaces.json` (default `~/.loom`) and is also
+editable from the CLI (`loom workspace list | add | remove`).
+
 ## Layout under `.loom/`
 
 ```
@@ -209,9 +217,12 @@ hashes + model + step config. On build:
   **conflict-free (CRDT) collaborative editing with presence and remote
   cursors** (carets are anchored to CRDT character ids, so they stay on the
   right character as concurrent edits land); **live presence on the DAG**
-  (avatars on the step each collaborator is inspecting); offline mock provider
-  + demo; single-file shareable export bundle.
-- **Next:** multi-workspace.
+  (avatars on the step each collaborator is inspecting); **multi-workspace**
+  (one `loom serve` hosts a registry of workspaces with an in-UI switcher;
+  documents, presence, and builds are isolated per workspace); offline mock
+  provider + demo; single-file shareable export bundle.
+- **Next:** hosted multiplayer beyond a single machine — accounts, shared
+  cloud workspaces, and access control.
 
 ## Tech
 

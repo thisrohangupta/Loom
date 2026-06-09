@@ -5,14 +5,23 @@ const main = document.getElementById("main");
 const activityEl = document.getElementById("activity");
 const SVGNS = "http://www.w3.org/2000/svg";
 
+// The web UI can host several workspaces; every /api/ call is scoped to the
+// one currently selected by appending ?ws=<id> (the server defaults to the cwd
+// workspace when it's absent, so /api/workspaces itself needs no scoping).
+let currentWs = null;
+function withWs(path) {
+  if (!currentWs || !path.startsWith("/api/") || path.startsWith("/api/workspaces")) return path;
+  return path + (path.includes("?") ? "&" : "?") + "ws=" + encodeURIComponent(currentWs);
+}
+
 const api = {
   async get(path) {
-    const r = await fetch(path);
+    const r = await fetch(withWs(path));
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
     return r.json();
   },
   async send(method, path, body) {
-    const r = await fetch(path, {
+    const r = await fetch(withWs(path), {
       method,
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -136,7 +145,8 @@ function loadIdentity() {
 }
 
 const collab = {
-  ws: null,
+  ws: null,         // the WebSocket connection
+  wsId: null,       // the workspace id we're currently viewing
   clientId: null,
   site: 1,
   me: loadIdentity(),
@@ -167,6 +177,7 @@ function closeActiveDoc() {
   collab.onSnapshot = collab.onOps = collab.onPresence = collab.onCursors = null;
 }
 function handleCollab(m) {
+  if (m.data.ws && m.data.ws !== collab.wsId) return; // another workspace's traffic
   if (m.data.path !== collab.activePath) return;
   if (m.type === "doc.snapshot") collab.onSnapshot?.(m.data);
   else if (m.type === "doc.ops") { if (m.data.by !== collab.clientId) collab.onOps?.(m.data); }
@@ -195,14 +206,20 @@ function connectWS() {
     if (m.type === "hello") {
       collab.clientId = m.clientId;
       if (typeof m.site === "number") collab.site = m.site;
+      if (!collab.wsId && m.ws) collab.wsId = m.ws;
       sendCollab({ type: "identify", name: collab.me.name, color: collab.me.color });
-      // re-join the doc / re-assert focus after a reconnect
+      // re-assert our workspace / doc / focus after a (re)connect
+      if (collab.wsId) sendCollab({ type: "ws.select", ws: collab.wsId });
       if (collab.activePath) sendCollab({ type: "doc.open", path: collab.activePath });
       if (collab.focus) sendCollab({ type: "focus", focus: collab.focus });
       return;
     }
-    if (m.type === "presence.focus") { dag.focusList = m.data.focus || []; renderDagPresence(); return; }
+    if (m.type === "presence.focus") {
+      if (m.data.ws && m.data.ws !== collab.wsId) return; // another workspace
+      dag.focusList = m.data.focus || []; renderDagPresence(); return;
+    }
     if (m.type === "doc.snapshot" || m.type === "doc.ops" || m.type === "presence" || m.type === "doc.cursors") return handleCollab(m);
+    if (m.ws && m.ws !== collab.wsId) return; // build/file/export events from another workspace
     handleEvent(m);
   };
 }
@@ -279,16 +296,63 @@ document.querySelectorAll(".nav").forEach((btn) =>
   }),
 );
 
-async function boot() {
+// ---- multi-workspace switcher ----
+let workspaces = [];
+async function loadWorkspaces() {
+  const r = await api.get("/api/workspaces").catch(() => ({ workspaces: [], current: null }));
+  workspaces = r.workspaces || [];
+  if (!currentWs) currentWs = r.current || (workspaces[0] && workspaces[0].id) || null;
+  renderWsSwitcher();
+}
+function renderWsSwitcher() {
+  const host = document.getElementById("ws-switcher");
+  if (!host) return;
+  host.replaceChildren();
+  const sel = el("select", { class: "ws-select", title: "Switch workspace" });
+  for (const w of workspaces) {
+    sel.append(el("option", { value: w.id, selected: w.id === currentWs ? "selected" : null }, w.name));
+  }
+  sel.onchange = () => switchWorkspace(sel.value);
+  const addBtn = el("button", { class: "btn ghost small", title: "Add a workspace by path" }, "+");
+  addBtn.onclick = addWorkspacePrompt;
+  host.append(sel, addBtn);
+}
+async function addWorkspacePrompt() {
+  const root = prompt("Path to a Loom workspace (a directory with loom.yaml):");
+  if (!root) return;
+  try {
+    const { workspace: entry } = await api.post("/api/workspaces", { root });
+    await loadWorkspaces();
+    switchWorkspace(entry.id);
+    toast(`Added ${entry.name}`);
+  } catch (err) { toast(err.message); }
+}
+async function switchWorkspace(id) {
+  if (!id || id === currentWs) return;
+  closeActiveDoc();
+  setFocus(null);
+  dag.focusList = [];
+  currentWs = id;
+  collab.wsId = id;
+  sendCollab({ type: "ws.select", ws: id }); // move our presence to the new workspace
+  await boot({ keepConn: true });
+}
+
+async function boot(opts = {}) {
+  await loadWorkspaces();
   workspace = await api.get("/api/workspace");
   document.getElementById("ws-name").textContent = workspace.name;
   document.getElementById("ws-desc").textContent = workspace.description || "";
-  if (workspace.mock && !document.querySelector(".mockpill")) {
+  const existingPill = document.querySelector(".mockpill");
+  if (workspace.mock && !existingPill) {
     document.querySelector(".brand > div").append(el("span", { class: "mockpill" }, "mock"));
+  } else if (!workspace.mock && existingPill) {
+    existingPill.remove();
   }
+  activityEl.replaceChildren();
   const events = await api.get("/api/events?limit=20").catch(() => ({ events: [] }));
   events.events.reverse().forEach((e) => handleEvent(e));
-  connectWS();
+  if (!opts.keepConn) connectWS();
   render();
 }
 
