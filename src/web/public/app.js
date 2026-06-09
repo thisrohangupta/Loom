@@ -892,6 +892,7 @@ async function renderShare() {
     "Exports are self-contained HTML — open offline, email them, or host anywhere. The links below work while this local server runs."));
 
   const allBtn = el("button", { class: "btn" }, "Export everything");
+  const bundleBtn = el("button", { class: "btn ghost" }, "Single file");
   const allRow = el("div", {});
   allBtn.onclick = async () => {
     try {
@@ -900,10 +901,17 @@ async function renderShare() {
       toast(`Exported ${pages.length} workflow${pages.length === 1 ? "" : "s"}`);
     } catch (err) { toast(err.message); }
   };
+  bundleBtn.onclick = async () => {
+    try {
+      const { url } = await api.post("/api/export-bundle", {});
+      allRow.replaceChildren(shareLinkRow(url));
+      toast("Bundled into one self-contained file");
+    } catch (err) { toast(err.message); }
+  };
   main.append(el("div", { class: "card" },
     el("div", { class: "row" }, el("strong", {}, "Whole workspace"),
-      el("span", { class: "muted" }, "one index linking every compiled output"),
-      el("span", { class: "spacer" }), allBtn),
+      el("span", { class: "muted" }, "a linked index, or one self-contained file"),
+      el("span", { class: "spacer" }), bundleBtn, allBtn),
     allRow));
 
   for (const wf of workspace.workflows) {

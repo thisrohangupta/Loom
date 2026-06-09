@@ -10,7 +10,7 @@ import { loadWorkspace, resolveDirs } from "../src/core/workspace.js";
 import { Store } from "../src/core/store.js";
 import { Engine } from "../src/core/engine.js";
 import { mockRunners } from "../src/llm/mock.js";
-import { exportWorkflowHtml, exportAllHtml } from "../src/core/exporter.js";
+import { exportWorkflowHtml, exportAllHtml, exportBundleHtml } from "../src/core/exporter.js";
 
 async function builtWorkspace() {
   const root = mkdtempSync(join(tmpdir(), "loom-export-"));
@@ -46,6 +46,21 @@ test("exportAllHtml writes an index linking every workflow page", async () => {
       assert.match(index, new RegExp(`${wf.id}\\.html`));
       assert.ok(existsSync(join(store.exportsDir, `${wf.id}.html`)));
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("exportBundleHtml inlines every workflow's output into one self-contained file", async () => {
+  const { root, ws, store } = await builtWorkspace();
+  try {
+    const { path, html } = exportBundleHtml(ws, store);
+    assert.ok(existsSync(path));
+    assert.match(html, /<!doctype html>/i);
+    assert.match(html, /class="toc"/); // table of contents
+    // each workflow's content is inlined (not linked out)
+    for (const wf of ws.config.workflows) assert.match(html, new RegExp(`id="wf-${wf.id}"`));
+    assert.doesNotMatch(html, /\.html"/); // no relative links to other files
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

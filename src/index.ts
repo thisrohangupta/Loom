@@ -14,7 +14,7 @@ export { resolveInputs } from "./core/resolve.js";
 export { listPrompts, readPrompt, writePrompt, renderTemplate } from "./core/prompts.js";
 export { scaffoldWorkspace } from "./core/scaffold.js";
 export { snapshot, listSnapshots, isGitRepo, readFileAtSnapshot, changedFiles } from "./core/snapshot.js";
-export { exportWorkflowHtml, exportAllHtml } from "./core/exporter.js";
+export { exportWorkflowHtml, exportAllHtml, exportBundleHtml } from "./core/exporter.js";
 export type { ExportedPage } from "./core/exporter.js";
 export { renderMarkdown } from "./core/markdown.js";
 export { diffLines, diffStats } from "./core/diff.js";

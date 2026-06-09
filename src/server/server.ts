@@ -17,7 +17,7 @@ import { Engine } from "../core/engine.js";
 import { listPrompts } from "../core/prompts.js";
 import { dagEdges } from "../core/graph.js";
 import { snapshot as gitSnapshot, listSnapshots, readFileAtSnapshot, changedFiles } from "../core/snapshot.js";
-import { exportWorkflowHtml, exportAllHtml } from "../core/exporter.js";
+import { exportWorkflowHtml, exportAllHtml, exportBundleHtml } from "../core/exporter.js";
 import { listFilesRecursive } from "../core/workspace.js";
 import { diffLines, diffStats } from "../core/diff.js";
 import { selectRunners } from "../llm/runners.js";
@@ -446,6 +446,13 @@ async function api(
     const { indexPath, pages } = exportAllHtml(ws, store);
     broadcast(store.appendEvent("export", { workflowId: "*", path: indexPath }));
     return sendJson(res, 200, { indexPath, indexUrl: "/export/index.html", pages });
+  }
+
+  if (path === "/api/export-bundle" && method === "POST") {
+    const { ws, store } = ctx();
+    const { path: filePath } = exportBundleHtml(ws, store);
+    broadcast(store.appendEvent("export", { workflowId: "bundle", path: filePath }));
+    return sendJson(res, 200, { path: filePath, url: "/export/bundle.html" });
   }
 
   return sendJson(res, 404, { error: "unknown endpoint" });

@@ -7,7 +7,7 @@ import { listPrompts } from "../core/prompts.js";
 import { scaffoldWorkspace, scaffoldDemo } from "../core/scaffold.js";
 import { mockEnabled, selectRunners } from "../llm/runners.js";
 import { snapshot as gitSnapshot, listSnapshots, readFileAtSnapshot, changedFiles } from "../core/snapshot.js";
-import { exportWorkflowHtml, exportAllHtml } from "../core/exporter.js";
+import { exportWorkflowHtml, exportAllHtml, exportBundleHtml } from "../core/exporter.js";
 import { dagEdges } from "../core/graph.js";
 import { diffLines, diffStats } from "../core/diff.js";
 import { computeMetrics } from "../core/metrics.js";
@@ -62,7 +62,7 @@ async function main() {
     case "snapshot":
       return cmdSnapshot(positionals, flags);
     case "export":
-      return cmdExport(positionals[0]);
+      return cmdExport(positionals[0], flags);
     case "diff":
       return cmdDiff(positionals, flags);
     case "serve":
@@ -298,14 +298,19 @@ function cmdSnapshot(positionals: string[], flags: Record<string, string | boole
   else console.log(c.yellow(res.reason ?? "Nothing to snapshot."));
 }
 
-function cmdExport(workflow: string | undefined) {
+function cmdExport(workflow: string | undefined, flags: Record<string, string | boolean>) {
   const { ws, store } = openWorkspace();
+  if (flags.bundle) {
+    const { path } = exportBundleHtml(ws, store);
+    console.log(c.green("✓ bundle ") + path + c.dim("  (one self-contained file — email or host it)"));
+    return;
+  }
   if (workflow) {
     const { path } = exportWorkflowHtml(ws, store, workflow);
     console.log(c.green("✓ exported ") + path);
     return;
   }
-  // No arg: export everything + an index you can share as one bundle.
+  // No arg: export every workflow + a linked index.
   const { indexPath, pages } = exportAllHtml(ws, store);
   for (const p of pages) console.log(c.green("✓ exported ") + p.path);
   console.log(c.green("✓ index ") + indexPath + c.dim("  (self-contained — open or share these files)"));

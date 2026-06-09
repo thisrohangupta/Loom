@@ -3,7 +3,27 @@ import { join } from "node:path";
 import type { Workspace } from "./workspace.js";
 import { Store } from "./store.js";
 import { renderMarkdown, escapeHtml } from "./markdown.js";
-import type { Artifact } from "./types.js";
+import type { Artifact, Workflow } from "./types.js";
+
+/** Render one workflow's step outputs (+ provenance) as inner HTML. */
+function workflowSections(store: Store, wf: Workflow): string {
+  return wf.steps
+    .map((step) => {
+      const key = store.getStepArtifactKey(wf.id, step.id);
+      if (!key || !store.hasArtifact(key)) {
+        return `<section class="step"><h2>${escapeHtml(step.id)}</h2>
+        <p class="muted">Not built yet.</p></section>`;
+      }
+      const artifact = store.getArtifact(key)!;
+      const content = store.getArtifactContent(key);
+      return `<section class="step">
+      <h2>${escapeHtml(step.id)} <span class="badge">${escapeHtml(step.type)}</span></h2>
+      <div class="output">${renderMarkdown(content)}</div>
+      ${provenance(artifact)}
+    </section>`;
+    })
+    .join("\n");
+}
 
 /**
  * Produce a self-contained, shareable HTML page for a workflow: each step's
@@ -18,26 +38,38 @@ export function exportWorkflowHtml(
   const wf = ws.config.workflows.find((w) => w.id === workflowId);
   if (!wf) throw new Error(`Workflow "${workflowId}" not found.`);
 
-  const sections = wf.steps.map((step) => {
-    const key = store.getStepArtifactKey(workflowId, step.id);
-    if (!key || !store.hasArtifact(key)) {
-      return `<section class="step"><h2>${escapeHtml(step.id)}</h2>
-        <p class="muted">Not built yet.</p></section>`;
-    }
-    const artifact = store.getArtifact(key)!;
-    const content = store.getArtifactContent(key);
-    return `<section class="step">
-      <h2>${escapeHtml(step.id)} <span class="badge">${escapeHtml(step.type)}</span></h2>
-      <div class="output">${renderMarkdown(content)}</div>
-      ${provenance(artifact)}
-    </section>`;
-  });
-
-  const html = page(ws, wf.id, wf.description ?? "", sections.join("\n"));
+  const html = page(ws, wf.id, wf.description ?? "", workflowSections(store, wf));
   store.init();
   const path = join(store.exportsDir, `${workflowId}.html`);
   writeFileSync(path, html);
   store.appendEvent("export", { workflowId, path });
+  return { path, html };
+}
+
+/**
+ * Export the entire workspace as a single self-contained HTML file — every
+ * workflow's outputs inlined, with a table of contents. One file you can email
+ * or host, no relative links to break.
+ */
+export function exportBundleHtml(ws: Workspace, store: Store): { path: string; html: string } {
+  const toc = ws.config.workflows
+    .map((wf) => `<li><a href="#wf-${escapeHtml(wf.id)}">${escapeHtml(wf.id)}</a>${wf.description ? ` — <span class="muted">${escapeHtml(wf.description)}</span>` : ""}</li>`)
+    .join("\n");
+  const body = ws.config.workflows
+    .map(
+      (wf) => `<div class="workflow" id="wf-${escapeHtml(wf.id)}">
+      <h1 class="wf-title">${escapeHtml(wf.id)}</h1>
+      ${wf.description ? `<p class="sub">${escapeHtml(wf.description)}</p>` : ""}
+      ${workflowSections(store, wf)}
+    </div>`,
+    )
+    .join("\n<hr/>\n");
+  const inner = `<nav class="toc"><strong>Contents</strong><ul>${toc}</ul></nav>\n${body}`;
+  const html = page(ws, "all workflows", ws.config.description ?? "", inner);
+  store.init();
+  const path = join(store.exportsDir, "bundle.html");
+  writeFileSync(path, html);
+  store.appendEvent("export", { workflowId: "bundle", path });
   return { path, html };
 }
 
@@ -142,6 +174,10 @@ function page(ws: Workspace, workflowId: string, description: string, body: stri
   .step { margin: 2rem 0; }
   .step h2 { font-size: 1.2rem; border-bottom: 1px solid #e4dfd3; padding-bottom: .3rem; }
   .badge { font-size: .7rem; background: #c2643c; color: #fff; padding: .1rem .45rem; border-radius: 999px; vertical-align: middle; }
+  .toc { border: 1px solid #e0dacd; border-radius: 10px; padding: .8rem 1.1rem; margin: 1rem 0 2rem; }
+  .toc ul { margin: .4rem 0 0; padding-left: 1.1rem; }
+  .wf-title { font-size: 1.5rem; margin-top: 1.5rem; }
+  hr { border: none; border-top: 1px solid #e4dfd3; margin: 2.5rem 0; }
   .output { margin: 1rem 0; }
   pre { background: #2b2b2b; color: #f2f2f2; padding: .9rem 1rem; border-radius: 8px; overflow:auto; }
   code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .9em; }

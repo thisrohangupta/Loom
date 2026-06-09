@@ -157,7 +157,7 @@ hashes + model + step config. On build:
 | `loom ls` | List workflows and their step DAG |
 | `loom prompts` | List the prompt library |
 | `loom snapshot -m "msg"` | Commit a git snapshot · `list` · `diff <a> <b> [path]` |
-| `loom export [workflow]` | Write shareable HTML (no arg = every workflow + an index) |
+| `loom export [workflow]` | Shareable HTML (no arg = all + index; `--bundle` = one file) |
 | `loom diff <workflow> <step>` | Diff a step's current output vs its previous version (`--from`, `--to`) |
 | `loom serve [--port 4319]` | Launch the local web UI with live updates |
 
@@ -201,9 +201,9 @@ hashes + model + step config. On build:
 
 - **Now:** git snapshots **+ diffing across snapshots**; interactive DAG view;
   per-artifact history + diffs; cost/cache-savings metrics; in-UI authoring;
-  **live collaborative editing with presence**; offline mock provider + demo.
-- **Next:** conflict-free (CRDT) concurrent editing layered over the event log;
-  single-file shareable export bundles.
+  **live collaborative editing with presence**; offline mock provider + demo;
+  **single-file shareable export bundle**.
+- **Next:** conflict-free (CRDT) concurrent editing layered over the event log.
 
 ## Tech
 
