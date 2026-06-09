@@ -52,7 +52,12 @@ function ctx(): Ctx {
   return { ws, dirs, store, engine: new Engine(ws, dirs, store, selectRunners(MOCK)) };
 }
 
-export async function startServer({ port = 4319, mock = false }: { port?: number; mock?: boolean } = {}): Promise<void> {
+export interface ServerHandle {
+  port: number;
+  close: () => Promise<void>;
+}
+
+export async function startServer({ port = 4319, mock = false, quiet = false }: { port?: number; mock?: boolean; quiet?: boolean } = {}): Promise<ServerHandle> {
   MOCK = mock;
   // Validate there is a workspace before binding.
   ctx();
@@ -83,6 +88,9 @@ export async function startServer({ port = 4319, mock = false }: { port?: number
     // The server never interprets it; it just relays so peers can resolve it
     // against their own replica (edit-stable, unlike a plain index).
     cursor: unknown;
+    // where this client is looking in the workspace — a "<wfId>::<stepId>"
+    // key (or null). Opaque to the server; drives presence avatars on the DAG.
+    focus: string | null;
   }
   const docs = new Map<string, CRDT>();
   const presence = new Map<string, Map<string, CollabUser>>();
@@ -119,6 +127,16 @@ export async function startServer({ port = 4319, mock = false }: { port?: number
   };
   const announceCursors = (path: string) =>
     broadcast({ type: "doc.cursors", data: { path, cursors: cursorsOn(path) } });
+  // workspace-wide "who's looking at which step" roster (presence in the DAG)
+  const focusRoster = () => {
+    const out: Array<{ id: string; name: string; color: string; key: string }> = [];
+    for (const client of wss.clients) {
+      const s = sockState.get(client);
+      if (s && s.focus) out.push({ id: s.id, name: s.user.name, color: s.user.color, key: s.focus });
+    }
+    return out;
+  };
+  const announceFocus = () => broadcast({ type: "presence.focus", data: { focus: focusRoster() } });
   const isManaged = (path: string): boolean => {
     const { ws, dirs } = ctx();
     const file = safeJoin(ws.root, path);
@@ -142,7 +160,7 @@ export async function startServer({ port = 4319, mock = false }: { port?: number
   wss.on("connection", (socket) => {
     const site = nextId++;
     const id = `c${site}`;
-    sockState.set(socket, { id, user: { id, name: "Guest", color: "#888" }, path: null, cursor: null });
+    sockState.set(socket, { id, user: { id, name: "Guest", color: "#888" }, path: null, cursor: null, focus: null });
     socket.send(JSON.stringify({ type: "hello", clientId: id, site, ts: new Date().toISOString() }));
 
     socket.on("message", (raw) => {
@@ -158,6 +176,7 @@ export async function startServer({ port = 4319, mock = false }: { port?: number
       if (m.type === "identify") {
         st.user = { id: st.id, name: String(m.name ?? "Guest").slice(0, 40), color: String(m.color ?? "#888") };
         if (st.path) announce(st.path);
+        if (st.focus) announceFocus(); // refresh name/color on the DAG too
       } else if (m.type === "doc.open" && typeof m.path === "string") {
         leave(socket);
         st.path = m.path;
@@ -180,10 +199,20 @@ export async function startServer({ port = 4319, mock = false }: { port?: number
         // anchor is opaque to the server — peers resolve it via their CRDT
         st.cursor = m.anchor ?? null;
         announceCursors(m.path);
+      } else if (m.type === "focus") {
+        // which workflow step this client is viewing (or null) — drives DAG presence
+        const next = typeof m.focus === "string" ? m.focus.slice(0, 200) : null;
+        if (next !== st.focus) {
+          st.focus = next;
+          announceFocus();
+        }
       }
     });
 
-    socket.on("close", () => leave(socket));
+    socket.on("close", () => {
+      leave(socket);
+      announceFocus(); // the socket is gone from wss.clients, so it drops off the DAG
+    });
   });
 
   async function handle(req: IncomingMessage, res: ServerResponse) {
@@ -211,12 +240,24 @@ export async function startServer({ port = 4319, mock = false }: { port?: number
   }
 
   await new Promise<void>((r) => server.listen(port, r));
-  // eslint-disable-next-line no-console
-  console.log(
-    `\n  Loom UI running at http://localhost:${port}` +
-      (MOCK ? "  (mock mode — no API calls)" : "") +
-      `\n  (Ctrl+C to stop)\n`,
-  );
+  const addr = server.address();
+  const boundPort = typeof addr === "object" && addr ? addr.port : port;
+  if (!quiet) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `\n  Loom UI running at http://localhost:${boundPort}` +
+        (MOCK ? "  (mock mode — no API calls)" : "") +
+        `\n  (Ctrl+C to stop)\n`,
+    );
+  }
+  return {
+    port: boundPort,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        for (const client of wss.clients) client.terminate();
+        wss.close(() => server.close((err) => (err ? reject(err) : resolve())));
+      }),
+  };
 }
 
 function serveStatic(path: string, res: ServerResponse) {
