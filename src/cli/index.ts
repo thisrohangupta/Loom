@@ -6,8 +6,8 @@ import { Engine } from "../core/engine.js";
 import { listPrompts } from "../core/prompts.js";
 import { scaffoldWorkspace, scaffoldDemo } from "../core/scaffold.js";
 import { mockEnabled, selectRunners } from "../llm/runners.js";
-import { snapshot as gitSnapshot, listSnapshots } from "../core/snapshot.js";
-import { exportWorkflowHtml, exportAllHtml } from "../core/exporter.js";
+import { snapshot as gitSnapshot, listSnapshots, readFileAtSnapshot, changedFiles } from "../core/snapshot.js";
+import { exportWorkflowHtml, exportAllHtml, exportBundleHtml } from "../core/exporter.js";
 import { dagEdges } from "../core/graph.js";
 import { diffLines, diffStats } from "../core/diff.js";
 import { computeMetrics } from "../core/metrics.js";
@@ -62,7 +62,7 @@ async function main() {
     case "snapshot":
       return cmdSnapshot(positionals, flags);
     case "export":
-      return cmdExport(positionals[0]);
+      return cmdExport(positionals[0], flags);
     case "diff":
       return cmdDiff(positionals, flags);
     case "serve":
@@ -99,6 +99,7 @@ ${c.bold("Commands:")}
   prompts                  List the prompt library
   snapshot -m "message"    Commit a git snapshot of the workspace
   snapshot list            List recent snapshots
+  snapshot diff <a> <b> [path]  Diff tracked files across two snapshots
   export <workflow>        Write a shareable self-contained HTML file
   diff <workflow> <step>   Diff a step's current output vs its previous version
   serve [--port 4319]      Launch the local web UI (--mock for offline demos)
@@ -264,20 +265,52 @@ function cmdSnapshot(positionals: string[], flags: Record<string, string | boole
     for (const s of snaps) console.log(`${c.cyan(s.hash)} ${c.dim(s.date)} ${s.subject}`);
     return;
   }
+  if (positionals[0] === "diff") {
+    const [, revA, revB, path] = positionals;
+    if (!revA || !revB) {
+      console.error(c.red("Usage: loom snapshot diff <revA> <revB> [path]"));
+      process.exitCode = 1;
+      return;
+    }
+    if (!path) {
+      const files = changedFiles(ws.root, revA, revB);
+      if (!files.length) console.log(c.dim("No tracked files changed between those snapshots."));
+      for (const f of files) console.log("  " + f);
+      console.log(c.dim(`\nDiff one with: loom snapshot diff ${revA} ${revB} <path>`));
+      return;
+    }
+    const a = readFileAtSnapshot(ws.root, revA, path) ?? "";
+    const b = readFileAtSnapshot(ws.root, revB, path) ?? "";
+    const ops = diffLines(a, b);
+    const stats = diffStats(ops);
+    console.log(`${c.dim(revA)} ${c.dim("→")} ${c.dim(revB)}  ${c.green("+" + stats.added)} ${c.red("-" + stats.removed)}  ${path}`);
+    if (!stats.added && !stats.removed) { console.log(c.dim("(identical)")); return; }
+    for (const op of ops) {
+      if (op.type === "add") console.log(c.green("+ " + op.text));
+      else if (op.type === "del") console.log(c.red("- " + op.text));
+      else console.log(c.dim("  " + op.text));
+    }
+    return;
+  }
   const message = (flags.m as string) ?? (flags.message as string) ?? `Snapshot ${new Date().toISOString()}`;
   const res = gitSnapshot(ws.root, message);
   if (res.ok) console.log(c.green(`✓ snapshot ${res.hash}`) + c.dim(` — ${message}`));
   else console.log(c.yellow(res.reason ?? "Nothing to snapshot."));
 }
 
-function cmdExport(workflow: string | undefined) {
+function cmdExport(workflow: string | undefined, flags: Record<string, string | boolean>) {
   const { ws, store } = openWorkspace();
+  if (flags.bundle) {
+    const { path } = exportBundleHtml(ws, store);
+    console.log(c.green("✓ bundle ") + path + c.dim("  (one self-contained file — email or host it)"));
+    return;
+  }
   if (workflow) {
     const { path } = exportWorkflowHtml(ws, store, workflow);
     console.log(c.green("✓ exported ") + path);
     return;
   }
-  // No arg: export everything + an index you can share as one bundle.
+  // No arg: export every workflow + a linked index.
   const { indexPath, pages } = exportAllHtml(ws, store);
   for (const p of pages) console.log(c.green("✓ exported ") + p.path);
   console.log(c.green("✓ index ") + indexPath + c.dim("  (self-contained — open or share these files)"));

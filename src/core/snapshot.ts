@@ -39,6 +39,26 @@ export function snapshot(root: string, message: string): { ok: boolean; hash?: s
   return { ok: true, hash };
 }
 
+/** Read a file's content at a given snapshot (git rev). Returns null if absent. */
+export function readFileAtSnapshot(root: string, rev: string, relPath: string): string | null {
+  const posix = relPath.split("\\").join("/");
+  try {
+    return execFileSync("git", ["show", `${rev}:${posix}`], { cwd: root, encoding: "utf8" });
+  } catch {
+    return null; // path didn't exist at that revision
+  }
+}
+
+/** Files that changed between two snapshots (git revs). */
+export function changedFiles(root: string, revA: string, revB: string): string[] {
+  try {
+    const out = git(root, ["diff", "--name-only", revA, revB]);
+    return out ? out.split("\n").filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
 export function listSnapshots(root: string, limit = 50): Snapshot[] {
   if (!isGitRepo(root)) return [];
   let log: string;

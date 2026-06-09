@@ -29,10 +29,10 @@ inputs/ + context/ + prompts/  ──▶  workflow (DAG of steps)  ──▶  ar
   carries provenance (inputs, model, tokens, cost, time).
 - **Shareable results.** Export any workflow — or the whole workspace as one
   linked index — to self-contained HTML you can open offline, email, or host.
-- **Real-time & versioned.** Live multi-user editing with presence (open the
-  same input in two windows and watch edits + avatars sync), plus git snapshots
-  for history. Built on an append-only event log so conflict-free (CRDT)
-  co-editing can be layered on next.
+- **Real-time & versioned.** **Conflict-free (CRDT) multi-user editing** with
+  presence — open the same input in two windows and concurrent edits merge
+  deterministically (no last-writer-wins clobbering), with avatars showing who's
+  in the file — plus git snapshots for history.
 
 ## Try it in 10 seconds (no API key)
 
@@ -156,8 +156,8 @@ hashes + model + step config. On build:
 | `loom stats` | Tokens, cost, and **$ saved by caching** |
 | `loom ls` | List workflows and their step DAG |
 | `loom prompts` | List the prompt library |
-| `loom snapshot -m "msg"` | Commit a git snapshot · `loom snapshot list` |
-| `loom export [workflow]` | Write shareable HTML (no arg = every workflow + an index) |
+| `loom snapshot -m "msg"` | Commit a git snapshot · `list` · `diff <a> <b> [path]` |
+| `loom export [workflow]` | Shareable HTML (no arg = all + index; `--bundle` = one file) |
 | `loom diff <workflow> <step>` | Diff a step's current output vs its previous version (`--from`, `--to`) |
 | `loom serve [--port 4319]` | Launch the local web UI with live updates |
 
@@ -178,8 +178,8 @@ hashes + model + step config. On build:
 - **Metrics** — tokens, model spend, and the headline **$ saved by caching**,
   refreshed live as you build.
 - **Inputs / Context / Prompts** — browse, **create**, edit, and delete managed
-  files, with **live collaborative editing**: edits sync across clients in real
-  time and presence avatars show who else is in the file.
+  files, with **conflict-free (CRDT) collaborative editing**: concurrent edits
+  merge deterministically and presence avatars show who else is in the file.
 - **Artifacts** — every compiled output with full provenance, plus a
   "diff vs previous" button per artifact.
 - **Snapshots** — create and browse git snapshots.
@@ -199,11 +199,11 @@ hashes + model + step config. On build:
 
 ## Roadmap (staged)
 
-- **Now:** git snapshots; interactive DAG view; per-artifact history + diffs;
-  cost/cache-savings metrics; in-UI authoring; **live collaborative editing with
-  presence**; offline mock provider + one-command demo.
-- **Next:** conflict-free (CRDT/Yjs) concurrent editing layered over the event
-  log; remote sharing of exports; diffing across snapshots.
+- **Now:** git snapshots + diffing across snapshots; interactive DAG view;
+  per-artifact history + diffs; cost/cache-savings metrics; in-UI authoring;
+  **conflict-free (CRDT) collaborative editing with presence**; offline mock
+  provider + demo; single-file shareable export bundle.
+- **Next:** CRDT-aware remote cursors; presence in the DAG; multi-workspace.
 
 ## Tech
 
