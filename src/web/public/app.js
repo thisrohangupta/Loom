@@ -950,6 +950,51 @@ async function renderSnapshots() {
   }
   card.append(ul);
   main.append(card);
+
+  if (snapshots.length >= 2) main.append(renderSnapshotCompare(snapshots));
+}
+
+function renderSnapshotCompare(snapshots) {
+  const opt = (s) => el("option", { value: s.hash }, `${s.hash} · ${s.subject.slice(0, 40)}`);
+  const fromSel = el("select", { class: "vers" }, ...snapshots.map(opt));
+  const toSel = el("select", { class: "vers" }, ...snapshots.map(opt));
+  fromSel.value = snapshots[1].hash; // older
+  toSel.value = snapshots[0].hash;   // newer
+  const filesBox = el("div", { class: "snap-files" });
+  const diffBox = el("div", { class: "diffbox" });
+
+  const loadFiles = async () => {
+    diffBox.replaceChildren();
+    filesBox.replaceChildren(el("span", { class: "muted" }, "Loading…"));
+    try {
+      const { files } = await api.get(`/api/snapshot-changes?from=${fromSel.value}&to=${toSel.value}`);
+      if (!files.length) { filesBox.replaceChildren(el("span", { class: "empty" }, "No tracked files changed.")); return; }
+      filesBox.replaceChildren(...files.map((f) => {
+        const b = el("button", { class: "btn ghost small" }, f);
+        b.onclick = async () => {
+          diffBox.replaceChildren(el("p", { class: "muted" }, "Diffing…"));
+          const d = await api.get(`/api/snapshot-diff?from=${fromSel.value}&to=${toSel.value}&path=${encodeURIComponent(f)}`);
+          diffBox.replaceChildren(
+            el("div", { class: "diffhead" },
+              el("span", { class: "add" }, `+${d.stats.added}`),
+              el("span", { class: "del" }, `−${d.stats.removed}`),
+              el("span", { class: "muted" }, f)),
+            renderDiffOps(d.ops),
+          );
+        };
+        return b;
+      }));
+    } catch (err) { filesBox.replaceChildren(el("span", { class: "empty" }, err.message)); }
+  };
+  fromSel.onchange = loadFiles;
+  toSel.onchange = loadFiles;
+  loadFiles();
+
+  return el("div", { class: "card" },
+    el("div", { class: "row" }, el("strong", {}, "Compare snapshots"), el("span", { class: "spacer" }),
+      el("span", { class: "muted" }, "from"), fromSel, el("span", { class: "arrow" }, "→"), el("span", { class: "muted" }, "to"), toSel),
+    el("p", { class: "muted", style: "margin:.4rem 0" }, "Pick a changed file to see the diff between the two snapshots."),
+    filesBox, diffBox);
 }
 
 boot().catch((err) => {

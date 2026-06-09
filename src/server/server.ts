@@ -16,7 +16,7 @@ import { Store } from "../core/store.js";
 import { Engine } from "../core/engine.js";
 import { listPrompts } from "../core/prompts.js";
 import { dagEdges } from "../core/graph.js";
-import { snapshot as gitSnapshot, listSnapshots } from "../core/snapshot.js";
+import { snapshot as gitSnapshot, listSnapshots, readFileAtSnapshot, changedFiles } from "../core/snapshot.js";
 import { exportWorkflowHtml, exportAllHtml } from "../core/exporter.js";
 import { listFilesRecursive } from "../core/workspace.js";
 import { diffLines, diffStats } from "../core/diff.js";
@@ -413,6 +413,24 @@ async function api(
   if (path === "/api/snapshots" && method === "GET") {
     const { ws } = ctx();
     return sendJson(res, 200, { snapshots: listSnapshots(ws.root) });
+  }
+
+  if (path === "/api/snapshot-changes" && method === "GET") {
+    const { ws } = ctx();
+    const from = url.searchParams.get("from") ?? "";
+    const to = url.searchParams.get("to") ?? "";
+    return sendJson(res, 200, { files: changedFiles(ws.root, from, to) });
+  }
+
+  if (path === "/api/snapshot-diff" && method === "GET") {
+    const { ws } = ctx();
+    const from = url.searchParams.get("from") ?? "";
+    const to = url.searchParams.get("to") ?? "";
+    const file = url.searchParams.get("path") ?? "";
+    const a = readFileAtSnapshot(ws.root, from, file) ?? "";
+    const b = readFileAtSnapshot(ws.root, to, file) ?? "";
+    const ops = diffLines(a, b);
+    return sendJson(res, 200, { ops, stats: diffStats(ops), path: file });
   }
 
   if (path === "/api/export" && method === "POST") {

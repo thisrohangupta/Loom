@@ -103,6 +103,7 @@ input.text { font: inherit; padding: .4rem .6rem; border: 1px solid var(--line);
 .toast { position: fixed; bottom: 1.2rem; right: 1.2rem; background: var(--ink); color: #fff; padding: .6rem 1rem; border-radius: 8px; opacity: 0; transition: opacity .2s; }
 .toast.show { opacity: 1; }
 
+.snap-files { display: flex; flex-wrap: wrap; gap: .4rem; margin: .6rem 0; }
 .share-link { margin-top: .7rem; gap: .4rem; }
 .share-link .text { font-family: ui-monospace, Menlo, monospace; }
 

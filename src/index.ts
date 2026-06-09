@@ -13,7 +13,7 @@ export { topoSort, dagEdges, stepDeps } from "./core/graph.js";
 export { resolveInputs } from "./core/resolve.js";
 export { listPrompts, readPrompt, writePrompt, renderTemplate } from "./core/prompts.js";
 export { scaffoldWorkspace } from "./core/scaffold.js";
-export { snapshot, listSnapshots, isGitRepo } from "./core/snapshot.js";
+export { snapshot, listSnapshots, isGitRepo, readFileAtSnapshot, changedFiles } from "./core/snapshot.js";
 export { exportWorkflowHtml, exportAllHtml } from "./core/exporter.js";
 export type { ExportedPage } from "./core/exporter.js";
 export { renderMarkdown } from "./core/markdown.js";
