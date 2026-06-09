@@ -22,6 +22,7 @@ import { listFilesRecursive } from "../core/workspace.js";
 import { diffLines, diffStats } from "../core/diff.js";
 import { selectRunners } from "../llm/runners.js";
 import { computeMetrics } from "../core/metrics.js";
+import { CRDT, type Op } from "../core/crdt.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = resolve(__dirname, "../web/public");
@@ -68,7 +69,7 @@ export async function startServer({ port = 4319, mock = false }: { port?: number
     }
   };
 
-  // --- live collaboration (LWW content sync + presence), keyed by file path ---
+  // --- live collaboration (CRDT op-based content sync + presence), per file ---
   interface CollabUser {
     id: string;
     name: string;
@@ -79,18 +80,27 @@ export async function startServer({ port = 4319, mock = false }: { port?: number
     user: CollabUser;
     path: string | null;
   }
-  const docs = new Map<string, { version: number; content: string }>();
+  const docs = new Map<string, CRDT>();
   const presence = new Map<string, Map<string, CollabUser>>();
   const sockState = new WeakMap<WebSocket, SocketState>();
   let nextId = 1;
 
-  const loadDoc = (path: string) => {
+  const loadDoc = (path: string): CRDT => {
     if (!docs.has(path)) {
       const { ws } = ctx();
       const abs = safeJoin(ws.root, path);
-      docs.set(path, { version: 1, content: existsSync(abs) ? readFileSync(abs, "utf8") : "" });
+      const doc = new CRDT(0); // server is site 0
+      const text = existsSync(abs) ? readFileSync(abs, "utf8") : "";
+      for (let i = 0; i < text.length; i++) doc.localInsert(i, text[i]);
+      docs.set(path, doc);
     }
     return docs.get(path)!;
+  };
+  const persist = (path: string, doc: CRDT) => {
+    const { ws } = ctx();
+    const abs = safeJoin(ws.root, path);
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, doc.value());
   };
   const usersOn = (path: string): CollabUser[] => [...(presence.get(path)?.values() ?? [])];
   const announce = (path: string) =>
@@ -110,9 +120,10 @@ export async function startServer({ port = 4319, mock = false }: { port?: number
   };
 
   wss.on("connection", (socket) => {
-    const id = `c${nextId++}`;
+    const site = nextId++;
+    const id = `c${site}`;
     sockState.set(socket, { id, user: { id, name: "Guest", color: "#888" }, path: null });
-    socket.send(JSON.stringify({ type: "hello", clientId: id, ts: new Date().toISOString() }));
+    socket.send(JSON.stringify({ type: "hello", clientId: id, site, ts: new Date().toISOString() }));
 
     socket.on("message", (raw) => {
       let m: Record<string, unknown>;
@@ -133,20 +144,17 @@ export async function startServer({ port = 4319, mock = false }: { port?: number
         if (!presence.has(m.path)) presence.set(m.path, new Map());
         presence.get(m.path)!.set(st.id, st.user);
         const doc = loadDoc(m.path);
-        socket.send(JSON.stringify({ type: "doc.state", data: { path: m.path, content: doc.content, version: doc.version } }));
+        socket.send(JSON.stringify({ type: "doc.snapshot", data: { path: m.path, nodes: doc.snapshot() } }));
         announce(m.path);
       } else if (m.type === "doc.close") {
         leave(socket);
-      } else if (m.type === "doc.edit" && typeof m.path === "string" && typeof m.content === "string") {
+      } else if (m.type === "doc.ops" && typeof m.path === "string" && Array.isArray(m.ops)) {
         if (!isManaged(m.path)) return;
         const doc = loadDoc(m.path);
-        doc.content = m.content;
-        doc.version++;
-        const { ws } = ctx();
-        const abs = safeJoin(ws.root, m.path);
-        mkdirSync(dirname(abs), { recursive: true });
-        writeFileSync(abs, m.content);
-        broadcast({ type: "doc.update", data: { path: m.path, content: m.content, version: doc.version, by: st.id } });
+        for (const op of m.ops as Op[]) doc.apply(op);
+        persist(m.path, doc);
+        // relay to everyone else editing this file
+        broadcast({ type: "doc.ops", data: { path: m.path, ops: m.ops, by: st.id } });
       }
     });
 

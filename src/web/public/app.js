@@ -1,4 +1,5 @@
 // Loom web UI — vanilla JS, no build step.
+import { CRDT, editsFromDiff } from "/crdt.js";
 
 const main = document.getElementById("main");
 const activityEl = document.getElementById("activity");
@@ -135,10 +136,13 @@ function loadIdentity() {
 const collab = {
   ws: null,
   clientId: null,
+  site: 1,
   me: loadIdentity(),
   activePath: null,
-  onState: null,
-  onUpdate: null,
+  doc: null,        // CRDT for the open file
+  lastText: "",     // last text we reconciled against
+  onSnapshot: null,
+  onOps: null,
   onPresence: null,
 };
 
@@ -148,12 +152,13 @@ function sendCollab(obj) {
 function closeActiveDoc() {
   if (collab.activePath) sendCollab({ type: "doc.close", path: collab.activePath });
   collab.activePath = null;
-  collab.onState = collab.onUpdate = collab.onPresence = null;
+  collab.doc = null;
+  collab.onSnapshot = collab.onOps = collab.onPresence = null;
 }
 function handleCollab(m) {
   if (m.data.path !== collab.activePath) return;
-  if (m.type === "doc.state") collab.onState?.(m.data);
-  else if (m.type === "doc.update") { if (m.data.by !== collab.clientId) collab.onUpdate?.(m.data); }
+  if (m.type === "doc.snapshot") collab.onSnapshot?.(m.data);
+  else if (m.type === "doc.ops") { if (m.data.by !== collab.clientId) collab.onOps?.(m.data); }
   else if (m.type === "presence") collab.onPresence?.(m.data.users);
 }
 function initials(name) {
@@ -177,12 +182,13 @@ function connectWS() {
     const m = JSON.parse(ev.data);
     if (m.type === "hello") {
       collab.clientId = m.clientId;
+      if (typeof m.site === "number") collab.site = m.site;
       sendCollab({ type: "identify", name: collab.me.name, color: collab.me.color });
       // re-join the doc currently open (e.g. after a reconnect)
       if (collab.activePath) sendCollab({ type: "doc.open", path: collab.activePath });
       return;
     }
-    if (m.type === "doc.state" || m.type === "doc.update" || m.type === "presence") return handleCollab(m);
+    if (m.type === "doc.snapshot" || m.type === "doc.ops" || m.type === "presence") return handleCollab(m);
     handleEvent(m);
   };
 }
@@ -715,18 +721,26 @@ function renderFileEditor(title, items, dir, rerender) {
     textarea,
   );
 
-  // debounced live edit broadcast
+  // local edits → derive CRDT ops vs. last reconciled text → broadcast
+  const pushLocalEdits = () => {
+    if (!collab.doc || collab.activePath !== currentPath) return;
+    const ops = editsFromDiff(collab.doc, collab.lastText, textarea.value);
+    collab.lastText = textarea.value;
+    if (ops.length) sendCollab({ type: "doc.ops", path: currentPath, ops });
+  };
   let editTimer = null;
   textarea.addEventListener("input", () => {
     if (!currentPath) return;
     clearTimeout(editTimer);
-    editTimer = setTimeout(() => sendCollab({ type: "doc.edit", path: currentPath, content: textarea.value }), 250);
+    editTimer = setTimeout(pushLocalEdits, 200);
   });
 
-  const applyRemote = (content) => {
+  // remote ops → apply to CRDT → reflect in the textarea, preserving caret
+  const applyRemoteText = (content) => {
     const pos = textarea.selectionStart;
     const atEnd = pos >= textarea.value.length;
     textarea.value = content;
+    collab.lastText = content;
     const p = atEnd ? content.length : Math.min(pos, content.length);
     textarea.selectionStart = textarea.selectionEnd = p;
   };
@@ -740,15 +754,25 @@ function renderFileEditor(title, items, dir, rerender) {
 
   const openFile = async (relPath) => {
     closeActiveDoc();
-    const { content } = await api.get(`/api/file?path=${encodeURIComponent(relPath)}`);
     currentPath = relPath;
     fileLabel.textContent = relPath;
-    textarea.value = content;
     editorCard.style.display = "block";
-    // join the collaborative session for this file
+    // join the collaborative session; the server replies with a CRDT snapshot
     collab.activePath = relPath;
-    collab.onState = (d) => { if (d.content !== textarea.value) applyRemote(d.content); };
-    collab.onUpdate = (d) => applyRemote(d.content);
+    collab.onSnapshot = (d) => {
+      collab.doc = new CRDT(collab.site);
+      collab.doc.loadSnapshot(d.nodes);
+      const text = collab.doc.value();
+      collab.lastText = text;
+      applyRemoteText(text);
+    };
+    collab.onOps = (d) => {
+      if (!collab.doc) return;
+      // fold in any un-pushed local edits first so we don't lose keystrokes
+      pushLocalEdits();
+      collab.doc.applyMany(d.ops);
+      applyRemoteText(collab.doc.value());
+    };
     collab.onPresence = renderPresence;
     sendCollab({ type: "doc.open", path: relPath });
   };
