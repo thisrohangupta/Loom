@@ -8,7 +8,7 @@ export * from "./core/types.js";
 export * from "./core/workspace.js";
 export { Store } from "./core/store.js";
 export { Engine } from "./core/engine.js";
-export type { BuildOptions, BuildResult, StepResult, StepStatus } from "./core/engine.js";
+export type { BuildOptions, BuildResult, StepResult, StepStatus, StepRunners } from "./core/engine.js";
 export { topoSort, dagEdges, stepDeps } from "./core/graph.js";
 export { resolveInputs } from "./core/resolve.js";
 export { listPrompts, readPrompt, writePrompt, renderTemplate } from "./core/prompts.js";

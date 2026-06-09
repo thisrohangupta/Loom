@@ -1,5 +1,7 @@
 # Loom
 
+[![CI](https://github.com/thisrohangupta/ecsprovisioner/actions/workflows/ci.yml/badge.svg)](https://github.com/thisrohangupta/ecsprovisioner/actions/workflows/ci.yml)
+
 **A local-first build system for LLM workflows — `make` for prompts, agents, and context.**
 
 Many projects have this shape: *there's a pile of source material you want to
@@ -184,6 +186,20 @@ headless). `yaml` for config, `ws` for live updates. No database — just files.
 
 > The Anthropic SDKs are pinned to `latest` since they move quickly; pin exact
 > versions in `package.json` if you need reproducible installs.
+
+## Development
+
+```bash
+npm run typecheck     # tsc --noEmit over src/
+npm run build         # compile + copy web assets
+npm test              # node:test suite (via tsx) — no API key needed
+```
+
+Tests live in `test/` and run on Node's built-in test runner. The engine accepts
+injectable step runners (`new Engine(ws, dirs, store, { inference, agent })`), so
+the full build → cache → rebuild → diff flow is tested deterministically without
+calling a model. **CI** (GitHub Actions) runs typecheck + build + tests on Node 20
+and 22 for every push and pull request.
 
 ## License
 
