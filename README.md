@@ -167,7 +167,10 @@ hashes + model + step config. On build:
 
 - **Workflows** — an interactive **DAG view**: each step is a node laid out by
   dependency rank, color-coded by freshness (fresh / stale / unbuilt / error)
-  and animated live as a build runs. Click a node to inspect it:
+  and animated live as a build runs. **Live presence right on the graph:**
+  collaborator avatars appear on the step each person is inspecting (and on the
+  workflow header), so you can see who's looking at what in real time. Click a
+  node to inspect it:
   - **Output** — the compiled artifact, rendered.
   - **Diff** — pick any two versions of that step's output and see a
     line-level diff (with collapsed unchanged context). Versions accumulate as
@@ -205,9 +208,10 @@ hashes + model + step config. On build:
   per-artifact history + diffs; cost/cache-savings metrics; in-UI authoring;
   **conflict-free (CRDT) collaborative editing with presence and remote
   cursors** (carets are anchored to CRDT character ids, so they stay on the
-  right character as concurrent edits land); offline mock provider + demo;
-  single-file shareable export bundle.
-- **Next:** presence in the DAG; multi-workspace.
+  right character as concurrent edits land); **live presence on the DAG**
+  (avatars on the step each collaborator is inspecting); offline mock provider
+  + demo; single-file shareable export bundle.
+- **Next:** multi-workspace.
 
 ## Tech
 

@@ -113,6 +113,16 @@ input.text { font: inherit; padding: .4rem .6rem; border: 1px solid var(--line);
   border-radius: 50%; color: #fff; font-size: .68rem; font-weight: 700; border: 2px solid var(--panel); }
 .avatar.you { box-shadow: 0 0 0 2px var(--accent); }
 .editing-note { font-size: .75rem; margin-left: .2rem; }
+.wf-presence { margin: 0 .2rem; }
+
+/* ---- presence in the DAG: live viewer avatars on step nodes ---- */
+.npresence { pointer-events: none; }
+.navatar circle { stroke: var(--panel); stroke-width: 2; }
+.navatar.more circle { fill: var(--muted); }
+.navinit { fill: #fff; font-size: 8.5px; font-weight: 700; text-anchor: middle;
+  font-family: ui-monospace, Menlo, monospace; }
+.navatar { animation: navatar-pop .18s ease-out; }
+@keyframes navatar-pop { from { opacity: 0; } to { opacity: 1; } }
 
 /* ---- remote cursors (CRDT-anchored carets over the textarea) ---- */
 .editor-wrap { position: relative; }

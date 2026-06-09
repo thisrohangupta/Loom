@@ -107,6 +107,8 @@ const dag = {
   stateByKey: new Map(),// key -> "fresh"|"stale"|"unbuilt"|"building"|"error"
   selectedKey: null,
   detailEls: new Map(), // wfId -> detail panel element
+  presenceEls: new Map(),// wfId -> card-header presence <span>
+  focusList: [],        // [{ id, name, color, key }] — who's looking at which step
 };
 
 function applyNodeState(key, state) {
@@ -141,11 +143,19 @@ const collab = {
   activePath: null,
   doc: null,        // CRDT for the open file
   lastText: "",     // last text we reconciled against
+  focus: null,      // "<wfId>::<stepId>" we're viewing — presence in the DAG
   onSnapshot: null,
   onOps: null,
   onPresence: null,
   onCursors: null,
 };
+
+// Broadcast which workflow step we're looking at (or null). Deduped.
+function setFocus(key) {
+  if (collab.focus === key) return;
+  collab.focus = key;
+  sendCollab({ type: "focus", focus: key });
+}
 
 function sendCollab(obj) {
   if (collab.ws && collab.ws.readyState === WebSocket.OPEN) collab.ws.send(JSON.stringify(obj));
@@ -186,10 +196,12 @@ function connectWS() {
       collab.clientId = m.clientId;
       if (typeof m.site === "number") collab.site = m.site;
       sendCollab({ type: "identify", name: collab.me.name, color: collab.me.color });
-      // re-join the doc currently open (e.g. after a reconnect)
+      // re-join the doc / re-assert focus after a reconnect
       if (collab.activePath) sendCollab({ type: "doc.open", path: collab.activePath });
+      if (collab.focus) sendCollab({ type: "focus", focus: collab.focus });
       return;
     }
+    if (m.type === "presence.focus") { dag.focusList = m.data.focus || []; renderDagPresence(); return; }
     if (m.type === "doc.snapshot" || m.type === "doc.ops" || m.type === "presence" || m.type === "doc.cursors") return handleCollab(m);
     handleEvent(m);
   };
@@ -262,6 +274,7 @@ document.querySelectorAll(".nav").forEach((btn) =>
     view = btn.dataset.view;
     logSink = null;
     closeActiveDoc();
+    setFocus(null); // leaving the board — drop our DAG presence
     render();
   }),
 );
@@ -353,12 +366,53 @@ function renderDagSvg(wf) {
       svgEl("circle", { class: "ndot", cx: NODE_W - 15, cy: 16, r: 5 }),
       svgEl("text", { class: "nname", x: 13, y: 23 }, step.id),
       svgEl("text", { class: "ntype", x: 13, y: 41 }, `${step.type} → ${step.output}`),
+      svgEl("g", { class: "npresence" }), // live viewer avatars (filled by renderDagPresence)
     );
     dag.nodes.set(key, g);
     if (dag.stateByKey.has(key)) applyNodeState(key);
     svg.append(g);
   }
   return svg;
+}
+
+// Paint "who's looking at what" avatars onto DAG nodes + workflow card headers.
+function renderDagPresence() {
+  const byKey = new Map();      // stepKey -> [user]
+  const byWf = new Map();       // wfId    -> [user]
+  for (const u of dag.focusList) {
+    if (!u.key || u.id === collab.clientId) continue; // others only
+    (byKey.get(u.key) || byKey.set(u.key, []).get(u.key)).push(u);
+    const wfId = u.key.split("::")[0];
+    (byWf.get(wfId) || byWf.set(wfId, []).get(wfId)).push(u);
+  }
+  const svgAvatar = (u, x) => {
+    const a = svgEl("g", { class: "navatar", transform: `translate(${x},-1)` });
+    a.append(
+      svgEl("circle", { r: 9, fill: u.color }),
+      svgEl("text", { class: "navinit", x: 0, y: 3 }, initials(u.name)),
+      svgEl("title", {}, `${u.name} is viewing this step`),
+    );
+    return a;
+  };
+  for (const [key, g] of dag.nodes) {
+    const layer = g.querySelector(".npresence");
+    if (!layer) continue;
+    layer.replaceChildren();
+    const users = byKey.get(key) || [];
+    users.slice(0, 4).forEach((u, i) => layer.append(svgAvatar(u, 16 + i * 15)));
+    if (users.length > 4) {
+      const more = svgEl("g", { class: "navatar more", transform: `translate(${16 + 4 * 15},-1)` });
+      more.append(svgEl("circle", { r: 9 }), svgEl("text", { class: "navinit", x: 0, y: 3 }, `+${users.length - 4}`));
+      layer.append(more);
+    }
+  }
+  for (const [wfId, span] of dag.presenceEls) {
+    const users = byWf.get(wfId) || [];
+    span.replaceChildren(
+      ...users.map((u) => el("span", { class: "avatar", style: `background:${u.color}`, title: `${u.name} · ${u.key.split("::")[1]}` }, initials(u.name))),
+    );
+    if (users.length) span.append(el("span", { class: "muted editing-note" }, `${users.length} viewing`));
+  }
 }
 
 const statusMaps = {};
@@ -380,6 +434,7 @@ async function renderWorkflows() {
   main.replaceChildren(el("h1", { class: "page" }, "Workflows"));
   dag.nodes.clear();
   dag.detailEls.clear();
+  dag.presenceEls.clear();
 
   const newWfBtn = el("button", { class: "btn small" }, "+ New workflow");
   newWfBtn.onclick = () => newWorkflow();
@@ -426,11 +481,14 @@ async function renderWorkflows() {
     const dagWrap = el("div", { class: "dag" }, renderDagSvg(wf));
     const detail = el("div", { class: "detail", style: "display:none" });
     dag.detailEls.set(wf.id, detail);
+    const wfPresence = el("span", { class: "presence wf-presence" });
+    dag.presenceEls.set(wf.id, wfPresence);
 
     main.append(
       el("div", { class: "card" },
         el("div", { class: "row" },
           el("h2", {}, wf.id),
+          wfPresence,
           el("span", { class: "spacer" }),
           addStepBtn, buildBtn, forceBtn, exportBtn,
         ),
@@ -447,6 +505,7 @@ async function renderWorkflows() {
     );
   }
   refreshStatuses();
+  renderDagPresence(); // repaint viewer avatars onto the freshly built nodes
 }
 
 function legendDot(cls, label) {
@@ -573,6 +632,7 @@ async function selectStep(wf, stepId) {
   dag.selectedKey = key;
   if (prev) applyNodeState(prev);
   applyNodeState(key);
+  setFocus(key); // tell peers which step we're inspecting
 
   const step = wf.steps.find((s) => s.id === stepId);
   const detail = dag.detailEls.get(wf.id);
@@ -598,7 +658,7 @@ async function selectStep(wf, stepId) {
       el("span", { class: "pill" }, step.type),
       el("span", { class: "muted" }, `→ ${step.output}`),
       el("span", { class: "spacer" }),
-      el("button", { class: "btn ghost small", onclick: () => { detail.style.display = "none"; if (dag.selectedKey) { const k = dag.selectedKey; dag.selectedKey = null; applyNodeState(k); } } }, "✕"),
+      el("button", { class: "btn ghost small", onclick: () => { detail.style.display = "none"; setFocus(null); if (dag.selectedKey) { const k = dag.selectedKey; dag.selectedKey = null; applyNodeState(k); } } }, "✕"),
     ),
     tabs, content,
   );
