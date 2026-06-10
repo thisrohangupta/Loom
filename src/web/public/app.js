@@ -459,6 +459,11 @@ function layoutDag(wf) {
   return { pos, width, height };
 }
 
+// truncate a label to fit inside a DAG node (SVG text has no overflow clipping)
+function fitText(s, max) {
+  return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
 function renderDagSvg(wf) {
   const { pos, width, height } = layoutDag(wf);
   const svg = svgEl("svg", { class: "dagsvg", width, height, viewBox: `0 0 ${width} ${height}` });
@@ -481,8 +486,8 @@ function renderDagSvg(wf) {
     g.append(
       svgEl("rect", { class: "nbox", width: NODE_W, height: NODE_H, rx: 11 }),
       svgEl("circle", { class: "ndot", cx: NODE_W - 15, cy: 16, r: 5 }),
-      svgEl("text", { class: "nname", x: 13, y: 23 }, step.id),
-      svgEl("text", { class: "ntype", x: 13, y: 41 }, `${step.type} → ${step.output}`),
+      svgEl("text", { class: "nname", x: 13, y: 23 }, fitText(step.id, 20)),
+      svgEl("text", { class: "ntype", x: 13, y: 41 }, fitText(`${step.type} → ${step.output}`, 23)),
       svgEl("g", { class: "npresence" }), // live viewer avatars (filled by renderDagPresence)
     );
     dag.nodes.set(key, g);
