@@ -31,10 +31,30 @@ function extract(prompt: string) {
   return { bullets, heads, sentences };
 }
 
+// Structural headers the prompt assembler injects ("## inputs/market.md",
+// "## (step) analysis") read as filler if they leak into a synthesized title.
+function isStructuralHeading(h: string): boolean {
+  return /^\((step|context)\)/.test(h) || /[\\/]/.test(h) || /\.[a-z0-9]{1,4}$/i.test(h);
+}
+function pickTitle(heads: string[], fallback: string): string {
+  return heads.find((h) => !/^context$/i.test(h) && !isStructuralHeading(h)) || fallback;
+}
+// Cheap deterministic hash so each step picks a different slice of points —
+// otherwise every artifact in a pipeline repeats the same first six bullets.
+function seedOf(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h;
+}
+
 function synthesize(opts: InferenceOptions): string {
   const { bullets, heads, sentences } = extract(opts.prompt);
-  const title = heads.find((h) => !/^context$/i.test(h)) || "Synthesized Brief";
-  const points = (bullets.length ? bullets : sentences).slice(0, 6);
+  const title = pickTitle(heads, "Synthesized Brief");
+  const pool = bullets.length ? bullets : sentences;
+  const start = pool.length ? seedOf(opts.prompt) % pool.length : 0;
+  const points = pool.length
+    ? Array.from({ length: Math.min(6, pool.length) }, (_, i) => pool[(start + i) % pool.length])
+    : [];
   const out: string[] = [];
   out.push(`# ${title}`);
   out.push("");
@@ -72,12 +92,18 @@ export async function mockInference(opts: InferenceOptions): Promise<InferenceRe
 
 export async function mockAgent(opts: AgentOptions): Promise<AgentResult> {
   const d = chunkDelay();
-  const title = opts.prompt.match(/^#\s+(.+)$/m)?.[1] || "Generated Site";
+  const lines = opts.prompt.split("\n").map((l) => l.trim());
+  const heads = lines.filter((l) => /^#{1,6}\s+/.test(l)).map((l) => l.replace(/^#+\s+/, ""));
+  // Prefer the product name for a landing page — an upstream document's heading
+  // ("Customer interviews") reads as filler on the "agent-built" page.
+  const title = opts.titleHint?.trim() || pickTitle(heads, "Generated Site");
+  // The blurb should come from the upstream artifact's body, not from the
+  // agent's own instruction line — take the first prose line after a heading.
+  const firstHead = lines.findIndex((l) => /^#{1,6}\s+/.test(l));
   const blurb =
-    opts.prompt
-      .split("\n")
-      .map((l) => l.trim())
-      .find((l) => l.length > 40 && !l.startsWith("#") && !l.startsWith(">")) ||
+    lines
+      .slice(firstHead >= 0 ? firstHead + 1 : 0)
+      .find((l) => l.length > 40 && !l.startsWith("#") && !l.startsWith(">") && !/^[-*]\s/.test(l)) ||
     "Built from the upstream artifact.";
 
   const progress = [

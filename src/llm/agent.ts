@@ -10,6 +10,12 @@ export interface AgentOptions {
   allowedTools?: string[];
   permissionMode?: string;
   maxTurns?: number;
+  /**
+   * A human title for the artifact the agent produces (e.g. the product name).
+   * Used only by the mock runner to title generated files; the real agent
+   * ignores it and titles from the prompt.
+   */
+  titleHint?: string;
   /** Called with each assistant text block (for live progress). */
   onText?: (text: string) => void;
 }
@@ -20,7 +26,12 @@ export interface AgentResult {
   subtype?: string;
 }
 
-const DEFAULT_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"];
+// Bash is deliberately NOT a default: with `bypassPermissions` it would give
+// any agent step unrestricted shell access to the host. Steps that need it
+// must opt in via `allowedTools`.
+const DEFAULT_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep"];
+// A wandering agent must terminate, not loop forever — generous, but bounded.
+const DEFAULT_MAX_TURNS = 25;
 
 /**
  * Run a Claude *coding agent* (Claude Agent SDK) headlessly. Unlike a chat
@@ -29,18 +40,17 @@ const DEFAULT_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"];
  * writes land directly in the working directory.
  */
 export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new Error("ANTHROPIC_API_KEY is not set. Export it before running agent steps.");
-  }
-
+  // No hard env check here: the Agent SDK resolves ANTHROPIC_API_KEY,
+  // ANTHROPIC_AUTH_TOKEN, or an existing Claude Code login on its own, and
+  // surfaces a clear error when none is available.
   const options: Record<string, unknown> = {
     model: opts.model,
     cwd: opts.cwd,
     allowedTools: opts.allowedTools ?? DEFAULT_TOOLS,
     permissionMode: opts.permissionMode ?? "bypassPermissions",
+    maxTurns: opts.maxTurns ?? DEFAULT_MAX_TURNS,
   };
   if (opts.systemPrompt) options.systemPrompt = opts.systemPrompt;
-  if (opts.maxTurns != null) options.maxTurns = opts.maxTurns;
 
   let text = "";
   let subtype: string | undefined;

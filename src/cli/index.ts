@@ -128,7 +128,7 @@ function openWorkspace(mock = false) {
   const dirs = resolveDirs(ws);
   const store = new Store(dirs.loom);
   store.init();
-  return { ws, dirs, store, engine: new Engine(ws, dirs, store, selectRunners(mock)) };
+  return { ws, dirs, store, engine: new Engine(ws, dirs, store, selectRunners(mock), mock ? "mock" : "live") };
 }
 
 function cmdInit(name: string | undefined, flags: Record<string, string | boolean>) {

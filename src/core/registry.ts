@@ -7,7 +7,7 @@
  * stable for a given root (a slug of the name plus a short hash of the absolute
  * path), so two workspaces named "demo" never collide.
  */
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
@@ -52,14 +52,27 @@ function slug(name: string): string {
   );
 }
 
+// Canonicalize through symlinks so a path reached two ways (e.g. /tmp vs
+// /private/tmp on macOS) always mints the same workspace id. process.cwd()
+// returns the realpath, so without this the id minted from a symlinked path
+// never matches the one the server registers.
+function canonical(root: string): string {
+  const abs = resolve(root);
+  try {
+    return realpathSync(abs);
+  } catch {
+    return abs;
+  }
+}
+
 export function workspaceId(name: string, root: string): string {
-  const h = createHash("sha1").update(resolve(root)).digest("hex").slice(0, 6);
+  const h = createHash("sha1").update(canonical(root)).digest("hex").slice(0, 6);
   return `${slug(name)}-${h}`;
 }
 
 /** Register the workspace rooted at `root` (idempotent; updates name on re-add). */
 export function addWorkspace(root: string): WorkspaceEntry {
-  const abs = resolve(root);
+  const abs = canonical(root);
   const ws = loadWorkspace(abs); // throws if there's no workspace here
   // Keep the id stable if this root is already registered; otherwise mint one.
   const existing = listWorkspaces().find((e) => e.root === abs);

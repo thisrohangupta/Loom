@@ -21,6 +21,23 @@ const AGENT_SYSTEM =
   "Work within the provided working directory. Make the requested changes directly, " +
   "then end with a concise report of what you created or modified.";
 
+// A hung model call (stalled stream, wandering agent) must fail the step with a
+// clean error instead of hanging the build — and the whole UI — forever.
+const INFERENCE_TIMEOUT_MS = 15 * 60 * 1000;
+const AGENT_TIMEOUT_MS = 20 * 60 * 1000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${Math.round(ms / 60000)} minutes`)),
+      ms,
+    );
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
+}
+
 export interface BuildOptions {
   force?: boolean;
   actor?: string;
@@ -59,14 +76,17 @@ export interface StepRunners {
 
 export class Engine {
   private runners: StepRunners;
+  private mode: "live" | "mock";
 
   constructor(
     private ws: Workspace,
     private dirs: ResolvedDirs,
     private store: Store,
     runners?: Partial<StepRunners>,
+    mode?: "live" | "mock",
   ) {
     this.runners = { inference: runInference, agent: runAgent, ...runners };
+    this.mode = mode ?? "live";
   }
 
   private emit(opts: BuildOptions, type: LoomEvent["type"], data: Record<string, unknown>): void {
@@ -108,6 +128,13 @@ export class Engine {
       agentDir,
       allowedTools: step.type === "agent" ? (step as any).allowedTools : undefined,
       effort: step.type === "inference" ? (step as any).effort : undefined,
+      // Input hashes guard invalidation even when a template doesn't splice an
+      // input's content into `rendered` (e.g. it references {{input:a}} but not
+      // {{input:b}} — editing b must still rebuild this step).
+      inputs: resolved.refs,
+      // Mock and live runs must never share cache entries: switching to a real
+      // API key has to rebuild rather than serve mock artifacts as "cached".
+      runner: this.mode,
     });
     return { resolved, template, rendered, model, key };
   }
@@ -125,14 +152,20 @@ export class Engine {
       const { resolved, template, rendered, model, key } = this.prepare(workflowId, step, runOutputs);
 
       if (!opts.force && this.store.hasArtifact(key)) {
-        const content = this.store.getArtifactContent(key);
-        runOutputs.set(step.id, content);
-        this.store.setStepArtifact(workflowId, step.id, key);
-        this.store.materialize(workflowId, step.output, content);
-        const artifact = this.store.getArtifact(key) ?? undefined;
-        results.push({ stepId: step.id, status: "cached", key, artifact });
-        this.emit(opts, "step.cached", { workflowId, stepId: step.id, key });
-        continue;
+        // A corrupt or partially-deleted cache entry (missing .out file) must
+        // fall through to a rebuild, not crash the whole build.
+        try {
+          const content = this.store.getArtifactContent(key);
+          runOutputs.set(step.id, content);
+          this.store.setStepArtifact(workflowId, step.id, key);
+          this.store.materialize(workflowId, step.output, content);
+          const artifact = this.store.getArtifact(key) ?? undefined;
+          results.push({ stepId: step.id, status: "cached", key, artifact });
+          this.emit(opts, "step.cached", { workflowId, stepId: step.id, key });
+          continue;
+        } catch {
+          // fall through and rebuild
+        }
       }
 
       this.emit(opts, "step.start", { workflowId, stepId: step.id, type: step.type, model });
@@ -141,29 +174,40 @@ export class Engine {
         let content = "";
         let usage;
         if (step.type === "inference") {
-          const res = await this.runners.inference({
-            model,
-            system: INFERENCE_SYSTEM,
-            prompt: rendered,
-            effort: step.effort,
-            maxTokens: step.maxTokens,
-            onDelta: (t) => opts.onDelta?.(step.id, t),
-          });
+          const res = await withTimeout(
+            this.runners.inference({
+              model,
+              system: INFERENCE_SYSTEM,
+              prompt: rendered,
+              effort: step.effort,
+              maxTokens: step.maxTokens,
+              onDelta: (t) => opts.onDelta?.(step.id, t),
+            }),
+            INFERENCE_TIMEOUT_MS,
+            `Step "${step.id}"`,
+          );
           content = res.content;
           usage = res.usage;
         } else {
           const cwd = resolve(this.ws.root, step.agentDir ?? ".");
           mkdirSync(cwd, { recursive: true });
-          const res = await this.runners.agent({
-            model,
-            cwd,
-            systemPrompt: AGENT_SYSTEM,
-            prompt: rendered,
-            allowedTools: step.allowedTools,
-            permissionMode: step.permissionMode,
-            maxTurns: step.maxTurns,
-            onText: (t) => opts.onDelta?.(step.id, t),
-          });
+          const res = await withTimeout(
+            this.runners.agent({
+              model,
+              cwd,
+              systemPrompt: AGENT_SYSTEM,
+              prompt: rendered,
+              allowedTools: step.allowedTools,
+              permissionMode: step.permissionMode,
+              maxTurns: step.maxTurns,
+              // mock-only: title generated files with the product, not an
+              // upstream document's heading
+              titleHint: (step.vars?.product as string | undefined) ?? this.ws.config.name,
+              onText: (t) => opts.onDelta?.(step.id, t),
+            }),
+            AGENT_TIMEOUT_MS,
+            `Agent step "${step.id}"`,
+          );
           content = res.content;
           usage = res.usage;
         }
