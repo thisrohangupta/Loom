@@ -69,6 +69,8 @@ a { color: var(--foreground); text-underline-offset: 2px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
 .dot.on { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent); }
 .dot.off { background: var(--err); }
+/* dialing, not broken — neutral gray pulse instead of an alarming red */
+.dot.connecting { background: var(--muted); animation: pulse 1.2s ease-in-out infinite; }
 
 /* ---- layout ---- */
 .layout { display: grid; grid-template-columns: 224px 1fr; height: calc(100% - 56px); }
@@ -88,6 +90,7 @@ a { color: var(--foreground); text-underline-offset: 2px; }
 .activity li b { color: var(--foreground); font-weight: 600; }
 
 main { padding: 1.5rem 1.8rem; overflow: auto; }
+main.loading { opacity: .55; pointer-events: none; transition: opacity .15s ease .1s; }
 h1.page { font-size: 1.4rem; font-weight: 600; letter-spacing: -.02em; margin: 0 0 1.2rem; }
 
 /* ---- card ---- */
@@ -183,16 +186,24 @@ textarea.editor {
 .output blockquote { border-left: 2px solid var(--border); margin: .8rem 0; padding: .1rem 1rem; color: var(--muted); }
 .output h1, .output h2, .output h3 { margin: 1.1rem 0 .4rem; font-weight: 600; letter-spacing: -.01em; }
 .output > :first-child { margin-top: 0; }
+.output table { border-collapse: collapse; margin: .8rem 0; font-size: .85rem; }
+.output th, .output td { border: 1px solid var(--border); padding: .35rem .6rem; text-align: left; }
+.output th { background: var(--surface); font-weight: 600; }
+.output hr { border: none; border-top: 1px solid var(--border); margin: 1rem 0; }
 
 /* ---- misc ---- */
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: .25rem .9rem; font-size: .85rem; }
 .kv dt { font-weight: 500; color: var(--muted); }
 .hash { font-family: ui-monospace, Menlo, monospace; color: var(--foreground); }
 .empty { color: var(--muted); }
+#toasts {
+  position: fixed; bottom: 1.2rem; right: 1.2rem; z-index: 60;
+  display: flex; flex-direction: column; align-items: flex-end; gap: .45rem;
+}
 .toast {
-  position: fixed; bottom: 1.2rem; right: 1.2rem; background: var(--foreground); color: var(--background);
+  background: var(--foreground); color: var(--background);
   padding: .6rem 1rem; border-radius: var(--radius); font-size: .85rem; opacity: 0;
-  transform: translateY(6px); transition: opacity .2s, transform .2s; box-shadow: 0 8px 24px rgba(0,0,0,.18); z-index: 60;
+  transform: translateY(6px); transition: opacity .2s, transform .2s; box-shadow: 0 8px 24px rgba(0,0,0,.18);
 }
 .toast.show { opacity: 1; transform: translateY(0); }
 
@@ -232,6 +243,8 @@ textarea.editor {
 .rcursor .flag { position: absolute; bottom: 100%; left: -1px; background: var(--ccolor, #888); color: #fff;
   font-size: .62rem; font-weight: 600; line-height: 1.5; padding: 0 .35em; border-radius: 4px 4px 4px 0;
   white-space: nowrap; animation: none; }
+/* on the first line the layer clips a flag above the caret — flip it below */
+.rcursor .flag.below { bottom: auto; top: 100%; border-radius: 0 4px 4px 4px; }
 @keyframes rcursor-blink { 50% { opacity: .35; } }
 
 /* role-gated controls */
@@ -260,6 +273,10 @@ body:not([data-role="owner"]) .requires-owner { display: none !important; }
 .banner {
   background: color-mix(in srgb, var(--warn) 10%, var(--card)); border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border));
   color: #92400e; padding: .65rem .9rem; border-radius: var(--radius); margin-bottom: 1rem; font-size: .85rem;
+}
+.banner.error {
+  background: color-mix(in srgb, var(--err) 8%, var(--card)); border-color: color-mix(in srgb, var(--err) 35%, var(--border));
+  color: var(--err);
 }
 
 /* ---- metrics ---- */
@@ -326,3 +343,11 @@ body:not([data-role="owner"]) .requires-owner { display: none !important; }
 .diff .dl.del .sign { color: var(--err); }
 .diff .dl.eq { color: var(--foreground); }
 .diff .dl.skip { color: var(--muted); font-style: italic; justify-content: center; background: var(--surface); }
+
+/* ---- narrow screens: collapse the sidebar to a top strip ---- */
+@media (max-width: 700px) {
+  .layout { grid-template-columns: 1fr; height: auto; }
+  .sidebar { flex-direction: row; flex-wrap: wrap; border-right: none; border-bottom: 1px solid var(--border); }
+  .nav { width: auto; }
+  .activity-wrap { display: none; }
+}

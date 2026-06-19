@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -23,11 +23,14 @@ test("registry starts empty", () => {
 
 test("add registers a workspace and resolves its root", () => {
   const root = makeWs("alpha");
+  // The registry canonicalizes through symlinks (so a path reached via /tmp and
+  // /private/tmp mints one id), so the stored root is the realpath of `root`.
+  const canonical = realpathSync(root);
   try {
     const entry = addWorkspace(root);
     assert.equal(entry.name, "alpha");
-    assert.equal(entry.root, root);
-    assert.equal(resolveWorkspaceRoot(entry.id), root);
+    assert.equal(entry.root, canonical);
+    assert.equal(resolveWorkspaceRoot(entry.id), canonical);
     assert.ok(listWorkspaces().some((w) => w.id === entry.id));
   } finally {
     rmSync(root, { recursive: true, force: true });

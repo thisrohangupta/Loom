@@ -84,13 +84,45 @@ function svgEl(tag, attrs = {}, ...kids) {
 }
 
 function toast(msg) {
+  let host = document.getElementById("toasts");
+  if (!host) {
+    host = el("div", { id: "toasts" });
+    document.body.append(host);
+  }
   const t = el("div", { class: "toast" }, msg);
-  document.body.append(t);
+  host.append(t); // stacked container — simultaneous toasts don't overlap
   requestAnimationFrame(() => t.classList.add("show"));
   setTimeout(() => {
     t.classList.remove("show");
     setTimeout(() => t.remove(), 300);
   }, 2200);
+}
+
+// ---- display formatting ----
+function fmtUsd(n) {
+  if (n == null || !isFinite(n)) return "—";
+  if (n === 0) return "$0.00";
+  if (n >= 1) return `$${n.toFixed(2)}`;
+  if (n >= 0.01) return `$${n.toFixed(3)}`;
+  return `$${n.toFixed(4)}`;
+}
+function fmtBytes(n) {
+  if (n == null || !isFinite(n)) return "—";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+// "2 min ago" for recent things, short date+time beyond a day — full timestamp
+// stays available via the title attribute where callers set one.
+function fmtTime(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso ?? "");
+  const s = Math.max(0, (Date.now() - d.getTime()) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
+    " " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
 // ---- minimal markdown -> html (display only) ----
@@ -110,7 +142,8 @@ function markdown(md) {
   };
   const flushP = () => { if (para.length) { out += `<p>${inline(para.join(" "))}</p>`; para = []; } };
   const closeL = () => { if (list) { out += `</${list}>`; list = null; } };
-  for (const line of lines) {
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li];
     if (line.trim().startsWith("```")) {
       if (inCode) { out += `<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`; code = []; inCode = false; }
       else { flushP(); closeL(); inCode = true; }
@@ -119,6 +152,21 @@ function markdown(md) {
     if (inCode) { code.push(line); continue; }
     const h = /^(#{1,6})\s+(.*)$/.exec(line);
     if (h) { flushP(); closeL(); out += `<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`; continue; }
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { flushP(); closeL(); out += "<hr/>"; continue; }
+    // pipe tables (header row + |---| separator) — model outputs use these a lot
+    if (/^\s*\|.*\|\s*$/.test(line) && /^\s*\|[\s:|-]+\|\s*$/.test(lines[li + 1] || "")) {
+      flushP(); closeL();
+      const cells = (l) => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => inline(c.trim()));
+      out += "<table><thead><tr>" + cells(line).map((c) => `<th>${c}</th>`).join("") + "</tr></thead><tbody>";
+      li += 2;
+      while (li < lines.length && /^\s*\|.*\|\s*$/.test(lines[li])) {
+        out += "<tr>" + cells(lines[li]).map((c) => `<td>${c}</td>`).join("") + "</tr>";
+        li++;
+      }
+      li--; // the loop's ++ moves past the last table row
+      out += "</tbody></table>";
+      continue;
+    }
     if (/^\s*[-*]\s+/.test(line)) { flushP(); if (list !== "ul") { closeL(); list = "ul"; out += "<ul>"; } out += `<li>${inline(line.replace(/^\s*[-*]\s+/, ""))}</li>`; continue; }
     if (/^\s*\d+\.\s+/.test(line)) { flushP(); if (list !== "ol") { closeL(); list = "ol"; out += "<ol>"; } out += `<li>${inline(line.replace(/^\s*\d+\.\s+/, ""))}</li>`; continue; }
     if (/^\s*>\s?/.test(line)) { flushP(); closeL(); out += `<blockquote>${inline(line.replace(/^\s*>\s?/, ""))}</blockquote>`; continue; }
@@ -149,9 +197,12 @@ function applyNodeState(key, state) {
 }
 
 // ---- live collaboration (presence + shared editing) ----
+// Identity is per-tab (sessionStorage): two windows of the same browser are
+// two distinct collaborators with their own name/color — localStorage would
+// make the two-window demo look like a mirror.
 function loadIdentity() {
   try {
-    const saved = JSON.parse(localStorage.getItem("loom.user"));
+    const saved = JSON.parse(sessionStorage.getItem("loom.user"));
     if (saved && saved.name) return saved;
   } catch { /* ignore */ }
   const names = ["Maple", "Cedar", "Wren", "Onyx", "Sage", "Rowan", "Iris", "Flint", "Lark", "Juno"];
@@ -160,7 +211,7 @@ function loadIdentity() {
     name: names[Math.floor(Math.random() * names.length)],
     color: colors[Math.floor(Math.random() * colors.length)],
   };
-  localStorage.setItem("loom.user", JSON.stringify(me));
+  sessionStorage.setItem("loom.user", JSON.stringify(me));
   return me;
 }
 
@@ -217,6 +268,7 @@ function connectWS() {
   const tok = getToken(currentWs);
   const ws = new WebSocket(`${proto}://${location.host}/ws${tok ? "?token=" + encodeURIComponent(tok) : ""}`);
   collab.ws = ws;
+  dot.className = "dot connecting"; // neutral while the socket dials — red is for failures
   ws.onopen = () => { dot.className = "dot on"; label.textContent = "live"; };
   ws.onclose = () => {
     dot.className = "dot off"; label.textContent = "reconnecting…";
@@ -227,7 +279,9 @@ function connectWS() {
     if (m.type === "hello") {
       collab.clientId = m.clientId;
       if (typeof m.site === "number") collab.site = m.site;
-      if (!collab.wsId && m.ws) collab.wsId = m.ws;
+      // the workspace we're actually viewing wins over the server's default —
+      // an invite link (?ws=…) may point at a non-default workspace
+      if (!collab.wsId) collab.wsId = currentWs || m.ws || null;
       sendCollab({ type: "identify", name: collab.me.name, color: collab.me.color });
       // re-assert our workspace / doc / focus after a (re)connect
       if (collab.wsId) sendCollab({ type: "ws.select", ws: collab.wsId, token: getToken(collab.wsId) });
@@ -252,13 +306,16 @@ function pushActivity(text) {
   while (activityEl.children.length > 60) activityEl.lastChild.remove();
 }
 
-function handleEvent(e) {
+// `replay` marks events re-read from the log (boot, workspace switch) — they
+// fill the activity feed but must not fire toasts as if they just happened.
+function handleEvent(e, replay = false) {
+  const esc = escapeHtml; // activity entries are innerHTML — escape data fields
   const nodeKey = e.data && e.data.workflowId && e.data.stepId ? `${e.data.workflowId}::${e.data.stepId}` : null;
   switch (e.type) {
     case "hello": return;
     case "build.start":
       logSink?.(`build ${e.data.workflowId} → ${e.data.steps.join(" → ")}\n`, "dim");
-      pushActivity(`build <b>${e.data.workflowId}</b> started`);
+      pushActivity(`build <b>${esc(e.data.workflowId)}</b> started`);
       break;
     case "step.start":
       logSink?.(`● ${e.data.stepId} (${e.data.type}) …\n`, "dim");
@@ -273,31 +330,31 @@ function handleEvent(e) {
       break;
     case "step.done": {
       const u = e.data.usage || {};
-      const cost = u.costUsd != null ? ` ~$${u.costUsd.toFixed(4)}` : "";
-      logSink?.(`\n✓ ${e.data.stepId} (${e.data.bytes}B ${e.data.durationMs}ms${cost})\n`, "ok");
+      const cost = u.costUsd != null ? ` ~${fmtUsd(u.costUsd)}` : "";
+      logSink?.(`\n✓ ${e.data.stepId} (${fmtBytes(e.data.bytes)} ${e.data.durationMs}ms${cost})\n`, "ok");
       if (nodeKey) applyNodeState(nodeKey, "fresh");
       break;
     }
     case "step.error":
       logSink?.(`\n✗ ${e.data.stepId}: ${e.data.error}\n`, "err");
       if (nodeKey) applyNodeState(nodeKey, "error");
-      pushActivity(`<b>${e.data.stepId}</b> failed`);
+      pushActivity(`<b>${esc(e.data.stepId)}</b> failed`);
       break;
     case "build.done":
       logSink?.(e.data.ok ? `\nbuild complete\n` : `\nbuild failed at ${e.data.failedAt}\n`, e.data.ok ? "ok" : "err");
-      pushActivity(`build <b>${e.data.workflowId}</b> ${e.data.ok ? "done" : "failed"}`);
-      if (view === "workflows") refreshStatuses();
-      if (view === "metrics") renderMetrics();
+      pushActivity(`build <b>${esc(e.data.workflowId)}</b> ${e.data.ok ? "done" : "failed"}`);
+      if (!replay && view === "workflows") refreshStatuses();
+      if (!replay && view === "metrics") renderMetrics();
       break;
     case "file.changed":
-      pushActivity(`edited <b>${e.data.path}</b>`);
-      toast(`Updated ${e.data.path}`);
+      pushActivity(`edited <b>${esc(e.data.path)}</b>`);
+      if (!replay) toast(`Updated ${e.data.path}`);
       break;
     case "snapshot":
-      pushActivity(`snapshot <b>${e.data.hash || ""}</b>`);
+      pushActivity(`snapshot <b>${esc(e.data.hash || "")}</b>`);
       break;
     case "export":
-      pushActivity(`exported <b>${e.data.workflowId}</b>`);
+      pushActivity(`exported <b>${esc(e.data.workflowId)}</b>`);
       break;
   }
 }
@@ -331,6 +388,12 @@ function renderWsSwitcher() {
   if (!host) return;
   host.replaceChildren();
   const sel = el("select", { class: "ws-select", title: "Switch workspace" });
+  // an invited user's workspace may not be in their visible list — synthesize
+  // an entry so the select can't silently show the wrong workspace as active
+  const known = workspaces.some((w) => w.id === currentWs);
+  if (currentWs && !known) {
+    sel.append(el("option", { value: currentWs, selected: "selected" }, (workspace && workspace.name) || currentWs));
+  }
   for (const w of workspaces) {
     sel.append(el("option", { value: w.id, selected: w.id === currentWs ? "selected" : null }, w.name));
   }
@@ -387,6 +450,10 @@ function consumeInviteLink() {
 function applyRole(role) {
   currentRole = role || "viewer";
   document.body.dataset.role = currentRole;
+  // a live role change (e.g. token revoked) must also flip state set at
+  // render time: the switcher's role badge and any open editor's readonly bit
+  renderWsSwitcher();
+  document.querySelectorAll(".editor-wrap > textarea.editor").forEach((t) => { t.readOnly = !canEdit(); });
 }
 
 async function boot(opts = {}) {
@@ -404,21 +471,37 @@ async function boot(opts = {}) {
   }
   activityEl.replaceChildren();
   const events = await api.get("/api/events?limit=20").catch(() => ({ events: [] }));
-  events.events.reverse().forEach((e) => handleEvent(e));
+  events.events.reverse().forEach((e) => handleEvent(e, true));
   if (!opts.keepConn) connectWS();
   render();
 }
 
+let renderSeq = 0; // ignore stale renders when the user clicks faster than fetches resolve
 async function render() {
-  workspace = await api.get("/api/workspace");
-  if (view === "workflows") return renderWorkflows();
-  if (view === "metrics") return renderMetrics();
-  if (view === "inputs") return renderInputs();
-  if (view === "context") return renderContext();
-  if (view === "prompts") return renderPrompts();
-  if (view === "artifacts") return renderArtifacts();
-  if (view === "snapshots") return renderSnapshots();
-  if (view === "share") return renderShare();
+  const seq = ++renderSeq;
+  main.classList.add("loading"); // dim the old view while the next one fetches
+  try {
+    workspace = await api.get("/api/workspace");
+    if (seq !== renderSeq) return;
+    if (view === "workflows") return await renderWorkflows();
+    if (view === "metrics") return await renderMetrics();
+    if (view === "inputs") return await renderInputs();
+    if (view === "context") return await renderContext();
+    if (view === "prompts") return await renderPrompts();
+    if (view === "artifacts") return await renderArtifacts();
+    if (view === "snapshots") return await renderSnapshots();
+    if (view === "share") return await renderShare();
+  } catch (err) {
+    if (seq !== renderSeq) return;
+    const retry = el("button", { class: "btn small" }, "Retry");
+    retry.onclick = () => render();
+    main.replaceChildren(el("div", { class: "card" },
+      el("h2", {}, "Couldn’t load this view"),
+      el("p", { class: "muted" }, err.message || String(err)),
+      retry));
+  } finally {
+    if (seq === renderSeq) main.classList.remove("loading");
+  }
 }
 
 // ---- DAG layout ----
@@ -592,15 +675,23 @@ async function renderWorkflows() {
       catch (err) { toast(err.message); }
       finally { forceBtn.disabled = false; }
     };
-    const exportBtn = el("button", { class: "btn ghost small" }, "Export");
+    const exportBtn = el("button", { class: "btn ghost small requires-editor" }, "Export");
     exportBtn.onclick = async () => {
-      try { const { url } = await api.post("/api/export", { workflow: wf.id }); window.open(url, "_blank"); }
-      catch (err) { toast(err.message); }
+      // open the window synchronously (inside the click's user activation) —
+      // window.open after an await is popup-blocked in Safari
+      const win = window.open("about:blank", "_blank");
+      try {
+        const { url } = await api.post("/api/export", { workflow: wf.id });
+        if (win) win.location = url; else window.open(url, "_blank");
+      } catch (err) { win?.close(); toast(err.message); }
     };
     const addStepBtn = el("button", { class: "btn ghost small requires-editor" }, "+ Step");
     addStepBtn.onclick = () => addStep(wf.id);
 
-    const dagWrap = el("div", { class: "dag" }, renderDagSvg(wf));
+    const dagWrap = el("div", { class: "dag" },
+      wf.steps.length
+        ? renderDagSvg(wf)
+        : el("p", { class: "empty" }, "No steps yet — add one with “+ Step”."));
     const detail = el("div", { class: "detail", style: "display:none" });
     dag.detailEls.set(wf.id, detail);
     const wfPresence = el("span", { class: "presence wf-presence" });
@@ -636,7 +727,7 @@ function legendDot(cls, label) {
 
 // ---- authoring: workflows, steps, raw config ----
 function modal(title, body, onSave, saveLabel = "Save") {
-  const err = el("div", { class: "banner", style: "display:none" });
+  const err = el("div", { class: "banner error", style: "display:none" });
   const overlay = el("div", { class: "overlay" });
   const saveB = el("button", { class: "btn" }, saveLabel);
   const cancelB = el("button", { class: "btn ghost" }, "Cancel");
@@ -812,7 +903,7 @@ async function renderDiffTab(container, wfId, stepId) {
       "Only one version so far. Edit an input or prompt and rebuild to compare versions."));
     return;
   }
-  const label = (v) => `${new Date(v.createdAt).toLocaleString()} · ${v.key.slice(0, 8)}${v.current ? " (current)" : ""}`;
+  const label = (v) => `${fmtTime(v.createdAt)} · ${v.key.slice(0, 8)}${v.current ? " (current)" : ""}`;
   const opt = (v) => el("option", { value: v.key }, label(v));
   const fromSel = el("select", { class: "vers" }, ...versions.map(opt));
   const toSel = el("select", { class: "vers" }, ...versions.map(opt));
@@ -938,7 +1029,8 @@ function renderFileEditor(title, items, dir, rerender) {
       cursorLayer.append(el("span", {
         class: "rcursor",
         style: `left:${left}px; top:${top}px; height:${lineH}px; --ccolor:${c.color}`,
-      }, el("span", { class: "flag" }, c.name)));
+        // on the first line the layer's overflow clips a flag above the caret
+      }, el("span", { class: `flag${top < lineH ? " below" : ""}` }, c.name)));
     }
     mirror.textContent = "";
   };
@@ -974,14 +1066,21 @@ function renderFileEditor(title, items, dir, rerender) {
     editTimer = setTimeout(pushLocalEdits, 200);
   });
 
-  // remote ops → apply to CRDT → reflect in the textarea, preserving caret
-  const applyRemoteText = (content) => {
+  // remote ops → apply to CRDT → reflect in the textarea, preserving caret.
+  // `caretIdx` is the CRDT-anchored position (resolved by the caller against
+  // the updated doc) so concurrent typing can't shift our caret; -1 falls back
+  // to the plain-index heuristic (e.g. on initial snapshot).
+  const applyRemoteText = (content, caretIdx = -1) => {
     const pos = textarea.selectionStart;
     const atEnd = pos >= textarea.value.length;
+    const scroll = textarea.scrollTop; // assigning .value resets scroll in Chrome
     textarea.value = content;
     collab.lastText = content;
-    const p = atEnd ? content.length : Math.min(pos, content.length);
+    const p = caretIdx >= 0
+      ? Math.min(caretIdx, content.length)
+      : atEnd ? content.length : Math.min(pos, content.length);
     textarea.selectionStart = textarea.selectionEnd = p;
+    textarea.scrollTop = scroll;
     renderRemoteCursors(); // anchors re-resolve against the updated text
   };
   const renderPresence = (users) => {
@@ -1001,21 +1100,47 @@ function renderFileEditor(title, items, dir, rerender) {
     remoteCursors = [];
     lastSentAnchor = "?";
     cursorLayer.replaceChildren();
+    // never show the previous file's text under the new file's label
+    textarea.value = "";
+    collab.lastText = "";
+    textarea.placeholder = "Loading…";
+    // if the socket is mid-reconnect the doc.open below is dropped — show the
+    // file via REST so the editor isn't blank until the snapshot lands
+    if (!collab.ws || collab.ws.readyState !== WebSocket.OPEN) {
+      api.get(`/api/file?path=${encodeURIComponent(relPath)}`).then(({ content }) => {
+        if (currentPath === relPath && !collab.doc) {
+          textarea.placeholder = "";
+          textarea.value = content;
+          collab.lastText = content;
+        }
+      }).catch(() => {});
+    }
     // join the collaborative session; the server replies with a CRDT snapshot
     collab.activePath = relPath;
     collab.onSnapshot = (d) => {
+      // keystrokes typed while the socket was down haven't been broadcast —
+      // hold on to them and re-derive ops on top of the fresh snapshot, so a
+      // reconnect can't roll the editor back.
+      const pending = collab.doc && textarea.value !== collab.lastText ? textarea.value : null;
       collab.doc = new CRDT(collab.site);
       collab.doc.loadSnapshot(d.nodes);
       const text = collab.doc.value();
-      collab.lastText = text;
+      textarea.placeholder = "";
       applyRemoteText(text);
+      if (pending != null && pending !== text) {
+        textarea.value = pending;
+        pushLocalEdits();
+      }
     };
     collab.onOps = (d) => {
       if (!collab.doc) return;
       // fold in any un-pushed local edits first so we don't lose keystrokes
       pushLocalEdits();
+      // anchor our caret to the char before it — a plain index drifts when a
+      // peer's insert/delete lands earlier in the document
+      const anchor = collab.doc.anchorAt(textarea.selectionStart);
       collab.doc.applyMany(d.ops);
-      applyRemoteText(collab.doc.value());
+      applyRemoteText(collab.doc.value(), collab.doc.indexOfAnchor(anchor));
     };
     collab.onPresence = renderPresence;
     collab.onCursors = (cursors) => {
@@ -1103,12 +1228,12 @@ async function renderArtifacts() {
           el("strong", {}, `${a.workflowId} / ${a.stepId}`),
           el("span", { class: "pill" }, a.stepType),
           el("span", { class: "spacer" }),
-          el("span", { class: "muted" }, new Date(a.createdAt).toLocaleString()),
+          el("span", { class: "muted", title: new Date(a.createdAt).toLocaleString() }, fmtTime(a.createdAt)),
         ),
         el("div", { class: "kv" },
           el("dt", {}, "model"), el("dd", {}, a.model || "—"),
-          el("dt", {}, "size"), el("dd", {}, `${a.contentBytes} B`),
-          el("dt", {}, "tokens"), el("dd", {}, `${u.inputTokens ?? "?"} in / ${u.outputTokens ?? "?"} out${u.costUsd != null ? ` · ~$${u.costUsd.toFixed(4)}` : ""}`),
+          el("dt", {}, "size"), el("dd", {}, fmtBytes(a.contentBytes)),
+          el("dt", {}, "tokens"), el("dd", {}, `${u.inputTokens ?? "?"} in / ${u.outputTokens ?? "?"} out${u.costUsd != null ? ` · ~${fmtUsd(u.costUsd)}` : ""}`),
         ),
       ),
     );
@@ -1123,7 +1248,6 @@ async function renderMetrics() {
     main.append(el("div", { class: "banner" },
       "Mock mode — outputs are synthesized offline and costs are modeled estimates."));
   }
-  const usd = (n) => `$${n.toFixed(4)}`;
   const stat = (label, value, sub, cls) =>
     el("div", { class: `stat ${cls || ""}` },
       el("div", { class: "stat-val" }, value),
@@ -1132,13 +1256,13 @@ async function renderMetrics() {
 
   main.append(
     el("div", { class: "stats-grid" },
-      stat("Saved by caching", usd(m.savedUsd), `${m.cacheHits} cache hit${m.cacheHits === 1 ? "" : "s"}`, "good"),
-      stat("Spent on model calls", usd(m.spentUsd), `${m.modelCalls} call${m.modelCalls === 1 ? "" : "s"}`),
-      stat("Cache hit rate", `${Math.round(m.cacheHitRate * 100)}%`),
+      stat("Saved by caching", fmtUsd(m.savedUsd), `${m.cacheHits} cache hit${m.cacheHits === 1 ? "" : "s"}`, "good"),
+      stat("Spent on model calls", fmtUsd(m.spentUsd), `${m.modelCalls} call${m.modelCalls === 1 ? "" : "s"}`),
+      stat("Cache hit rate", `${Math.round((m.cacheHitRate || 0) * 100)}%`),
       stat("Tokens", (m.tokensIn + m.tokensOut).toLocaleString(),
         `${m.tokensIn.toLocaleString()} in / ${m.tokensOut.toLocaleString()} out`),
       stat("Artifacts", String(m.artifacts)),
-      stat("Builds", String(m.builds), m.lastBuildAt ? `last ${new Date(m.lastBuildAt).toLocaleString()}` : ""),
+      stat("Builds", String(m.builds), m.lastBuildAt ? `last ${fmtTime(m.lastBuildAt)}` : ""),
     ),
     el("p", { class: "muted" },
       "“Saved by caching” is the model spend avoided by serving unchanged steps from cache instead of recomputing them — the core of treating LLM work like a build."),
@@ -1277,7 +1401,7 @@ async function renderSnapshots() {
   btn.onclick = async () => {
     try {
       const res = await api.post("/api/snapshot", { message: msg.value });
-      if (res.ok) { toast(`Snapshot ${res.hash}`); msg.value = ""; renderSnapshots(); }
+      if (res.ok) { toast(res.hash ? `Snapshot ${res.hash}` : "Snapshot saved"); msg.value = ""; renderSnapshots(); }
       else toast(res.reason || "Nothing to snapshot");
     } catch (err) { toast(err.message); }
   };
@@ -1291,7 +1415,7 @@ async function renderSnapshots() {
       el("span", { class: "hash" }, s.hash),
       el("span", {}, s.subject),
       el("span", { class: "spacer" }),
-      el("span", { class: "muted" }, new Date(s.date).toLocaleString()),
+      el("span", { class: "muted", title: new Date(s.date).toLocaleString() }, fmtTime(s.date)),
     ));
   }
   card.append(ul);

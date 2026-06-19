@@ -71,7 +71,7 @@ function buildCtx(ws: Workspace): Ctx {
   const dirs = resolveDirs(ws);
   const store = new Store(dirs.loom);
   store.init();
-  return { ws, dirs, store, engine: new Engine(ws, dirs, store, selectRunners(MOCK)) };
+  return { ws, dirs, store, engine: new Engine(ws, dirs, store, selectRunners(MOCK), MOCK ? "mock" : "live") };
 }
 
 /**
@@ -124,10 +124,19 @@ export async function startServer({ port = 4319, host = "127.0.0.1", mock = fals
     verifyClient: (info: { origin?: string; req: IncomingMessage }) =>
       originAllowed(info.origin, info.req.headers.host),
   });
-  const broadcast = (msg: unknown) => {
+  // Every broadcast is scoped to a workspace: only sockets currently viewing
+  // that workspace *and* holding a live role for it receive the message. Role
+  // is re-resolved per send, so revoking a token stops a socket's stream
+  // immediately — access is enforced server-side, not by client-side filtering.
+  const broadcast = (ws: string | null, msg: unknown) => {
+    if (!ws) return;
     const data = JSON.stringify(msg);
     for (const client of wss.clients) {
-      if (client.readyState === WebSocket.OPEN) client.send(data);
+      if (client.readyState !== WebSocket.OPEN) continue;
+      const st = sockState.get(client);
+      if (!st || st.ws !== ws) continue;
+      if (socketRole(st, ws) === null) continue;
+      client.send(data);
     }
   };
 
@@ -157,10 +166,28 @@ export async function startServer({ port = 4319, host = "127.0.0.1", mock = fals
   // host machine (loopback) is owner, else no access.
   const socketRole = (st: SocketState, ws: string): Role | null =>
     resolveRole(ws, st.token) ?? (st.loopback && OWNER_LOOPBACK ? "owner" : null);
+  // Re-resolve a socket's role and push the change to the client if it moved
+  // (e.g. its token was revoked), so the UI flips to read-only immediately.
+  const refreshRole = (socket: WebSocket, st: SocketState): Role | null => {
+    const next = socketRole(st, st.ws);
+    if (next !== st.role) {
+      st.role = next;
+      socket.send(JSON.stringify({ type: "ws.role", data: { ws: st.ws, role: next } }));
+    }
+    return next;
+  };
   const docs = new Map<string, CRDT>();
   const presence = new Map<string, Map<string, CollabUser>>();
   const sockState = new WeakMap<WebSocket, SocketState>();
+  // Evicted docs linger briefly so a quick reconnect (reload, wifi blip)
+  // resumes the same replica instead of a re-seeded one with fresh ids.
+  const docEvict = new Map<string, NodeJS.Timeout>();
+  const DOC_EVICT_MS = 60_000;
   let nextId = 1;
+  // Each seed gets its own (negative) site id so ids minted by one seeding can
+  // never collide with a later re-seed of the same file — colliding ids make
+  // replicas silently diverge. Client sites are positive, so they never clash.
+  let seedSite = -1;
 
   // Collaboration state is namespaced per workspace so two open workspaces
   // never share documents, presence, carets, or DAG focus. The composite key
@@ -170,14 +197,56 @@ export async function startServer({ port = 4319, host = "127.0.0.1", mock = fals
 
   const loadDoc = (ws: string, path: string): CRDT => {
     const k = dkey(ws, path);
+    const evict = docEvict.get(k);
+    if (evict) {
+      clearTimeout(evict);
+      docEvict.delete(k);
+    }
     if (!docs.has(k)) {
       const abs = safeJoin(ctx(ws).ws.root, path);
-      const doc = new CRDT(0); // server is site 0
+      const doc = new CRDT(seedSite--);
       const text = existsSync(abs) ? readFileSync(abs, "utf8") : "";
       for (let i = 0; i < text.length; i++) doc.localInsert(i, text[i]);
       docs.set(k, doc);
     }
     return docs.get(k)!;
+  };
+  /**
+   * Apply an out-of-band file write (REST PUT) to the live CRDT replica, if one
+   * exists, as a minimal prefix/suffix edit — otherwise disk and the in-memory
+   * doc silently diverge and later edits resurrect stale content. Returns the
+   * ops to relay to the room.
+   */
+  const syncDocToContent = (ws: string, path: string, next: string): Op[] => {
+    const doc = docs.get(dkey(ws, path));
+    if (!doc) return [];
+    const prev = doc.value();
+    if (prev === next) return [];
+    let start = 0;
+    while (start < prev.length && start < next.length && prev[start] === next[start]) start++;
+    let endPrev = prev.length;
+    let endNext = next.length;
+    while (endPrev > start && endNext > start && prev[endPrev - 1] === next[endNext - 1]) {
+      endPrev--;
+      endNext--;
+    }
+    const ops: Op[] = [];
+    for (let i = endPrev - 1; i >= start; i--) {
+      const op = doc.localDelete(i);
+      if (op) ops.push(op);
+    }
+    for (let i = start; i < endNext; i++) ops.push(doc.localInsert(i, next[i]));
+    return ops;
+  };
+  const onFileWritten = (ws: string | null, path: string, content: string | null) => {
+    if (!ws) return;
+    if (content === null) {
+      // file deleted — drop the replica so it can't resurrect stale content
+      docs.delete(dkey(ws, path));
+      return;
+    }
+    const ops = syncDocToContent(ws, path, content);
+    if (ops.length) broadcast(ws, { type: "doc.ops", data: { ws, path, ops, by: "server" } });
   };
   const persist = (ws: string, path: string, doc: CRDT) => {
     const abs = safeJoin(ctx(ws).ws.root, path);
@@ -186,7 +255,7 @@ export async function startServer({ port = 4319, host = "127.0.0.1", mock = fals
   };
   const usersOn = (ws: string, path: string): CollabUser[] => [...(presence.get(dkey(ws, path))?.values() ?? [])];
   const announce = (ws: string, path: string) =>
-    broadcast({ type: "presence", data: { ws, path, users: usersOn(ws, path) } });
+    broadcast(ws, { type: "presence", data: { ws, path, users: usersOn(ws, path) } });
   const cursorsOn = (ws: string, path: string) => {
     const out: Array<{ id: string; name: string; color: string; anchor: unknown }> = [];
     for (const client of wss.clients) {
@@ -196,7 +265,7 @@ export async function startServer({ port = 4319, host = "127.0.0.1", mock = fals
     return out;
   };
   const announceCursors = (ws: string, path: string) =>
-    broadcast({ type: "doc.cursors", data: { ws, path, cursors: cursorsOn(ws, path) } });
+    broadcast(ws, { type: "doc.cursors", data: { ws, path, cursors: cursorsOn(ws, path) } });
   // per-workspace "who's looking at which step" roster (presence in the DAG)
   const focusRoster = (ws: string) => {
     const out: Array<{ id: string; name: string; color: string; key: string }> = [];
@@ -206,7 +275,7 @@ export async function startServer({ port = 4319, host = "127.0.0.1", mock = fals
     }
     return out;
   };
-  const announceFocus = (ws: string) => broadcast({ type: "presence.focus", data: { ws, focus: focusRoster(ws) } });
+  const announceFocus = (ws: string) => broadcast(ws, { type: "presence.focus", data: { ws, focus: focusRoster(ws) } });
   const isManaged = (ws: string, path: string): boolean => {
     const { ws: w, dirs } = ctx(ws);
     const file = resolve(w.root, path); // resolve (not safeJoin) so traversal just reads as unmanaged
@@ -223,11 +292,17 @@ export async function startServer({ port = 4319, host = "127.0.0.1", mock = fals
       st.cursor = null;
       announce(ws, path);
       announceCursors(ws, path); // drop their caret from peers' editors
-      // free the in-memory CRDT once the last editor leaves; it's already
-      // persisted to disk and reloads cleanly on the next open.
+      // free the in-memory CRDT once the last editor leaves — after a grace
+      // period, so a reload or wifi blip resumes the same replica. It's
+      // persisted to disk, so the delayed eviction loses nothing.
       if (room.size === 0) {
         presence.delete(k);
-        docs.delete(k);
+        const timer = setTimeout(() => {
+          docs.delete(k);
+          docEvict.delete(k);
+        }, DOC_EVICT_MS);
+        timer.unref?.();
+        docEvict.set(k, timer);
       }
     } else if (st) {
       st.path = null;
@@ -277,8 +352,9 @@ export async function startServer({ port = 4319, host = "127.0.0.1", mock = fals
         socket.send(JSON.stringify({ type: "ws.role", data: { ws: m.ws, role: st.role } }));
       } else if (m.type === "doc.open" && typeof m.path === "string") {
         // viewing requires access; only managed files can be opened (same
-        // confinement the REST file API enforces)
-        if (!st.role) return;
+        // confinement the REST file API enforces). Role is re-resolved per
+        // message so a revoked token loses access without reconnecting.
+        if (!refreshRole(socket, st)) return;
         if (!isManaged(st.ws, m.path)) return;
         leave(socket);
         st.path = m.path;
@@ -292,14 +368,21 @@ export async function startServer({ port = 4319, host = "127.0.0.1", mock = fals
       } else if (m.type === "doc.close") {
         leave(socket);
       } else if (m.type === "doc.ops" && typeof m.path === "string" && Array.isArray(m.ops)) {
-        // editing requires editor+ — viewers can watch but not change content
-        if (!st.role || !roleAtLeast(st.role, "editor")) return;
+        // editing requires editor+ — viewers can watch but not change content.
+        // Role is re-resolved per batch: "enforced on every keystroke" must
+        // hold even after a token is revoked mid-session.
+        const role = refreshRole(socket, st);
+        if (!role || !roleAtLeast(role, "editor")) return;
         if (!isManaged(st.ws, m.path)) return;
+        // validate shapes up front so one malformed op can't abort the batch
+        // mid-apply (a partial apply silently desyncs the sender)
+        const ops = (m.ops as unknown[]).filter(isValidOp);
+        if (!ops.length) return;
         const doc = loadDoc(st.ws, m.path);
-        for (const op of m.ops as Op[]) doc.apply(op);
+        for (const op of ops) doc.apply(op);
         persist(st.ws, m.path, doc);
         // relay to everyone else editing this file in this workspace
-        broadcast({ type: "doc.ops", data: { ws: st.ws, path: m.path, ops: m.ops, by: st.id } });
+        broadcast(st.ws, { type: "doc.ops", data: { ws: st.ws, path: m.path, ops, by: st.id } });
       } else if (m.type === "cursor" && typeof m.path === "string" && st.path === m.path) {
         // anchor is opaque to the server — peers resolve it via their CRDT
         st.cursor = m.anchor ?? null;
@@ -340,7 +423,7 @@ export async function startServer({ port = 4319, host = "127.0.0.1", mock = fals
     }
 
     // --- API ---
-    if (path.startsWith("/api/")) return api(req, res, url, method, broadcast);
+    if (path.startsWith("/api/")) return api(req, res, url, method, broadcast, onFileWritten);
 
     // --- exported HTML, scoped per workspace: /export/<wsId>/<file> ---
     if (path.startsWith("/export/")) {
@@ -363,7 +446,23 @@ export async function startServer({ port = 4319, host = "127.0.0.1", mock = fals
     return serveStatic(path, res);
   }
 
-  await new Promise<void>((r) => server.listen(port, host, r));
+  // `ws` re-emits http server errors on the WebSocketServer; without a handler
+  // that second emit crashes the process even when the listen error is caught.
+  wss.on("error", () => {});
+  await new Promise<void>((resolveListen, reject) => {
+    const onError = (err: NodeJS.ErrnoException) => {
+      reject(
+        err.code === "EADDRINUSE"
+          ? new Error(`port ${port} is already in use — is another \`loom serve\` running? (stop it, or pass --port)`)
+          : err,
+      );
+    };
+    server.once("error", onError);
+    server.listen(port, host, () => {
+      server.removeListener("error", onError);
+      resolveListen();
+    });
+  });
   const addr = server.address();
   const boundPort = typeof addr === "object" && addr ? addr.port : port;
   const lan = host !== "127.0.0.1" && host !== "localhost" && host !== "::1";
@@ -415,13 +514,14 @@ async function api(
   res: ServerResponse,
   url: URL,
   method: string,
-  broadcast: (msg: unknown) => void,
+  broadcast: (ws: string | null, msg: unknown) => void,
+  onFileWritten: (ws: string | null, path: string, content: string | null) => void,
 ) {
   const path = url.pathname;
   const wsId = reqWs(url); // which workspace this request is scoped to
-  // Tag broadcast events with the workspace so clients viewing a different one
-  // ignore them (e.g. a build in workspace A must not animate workspace B's DAG).
-  const bcast = (e: unknown) => broadcast(e && typeof e === "object" ? { ...(e as object), ws: wsId } : e);
+  // Tag broadcast events with the workspace (the broadcast itself is already
+  // scoped server-side to sockets with access to it).
+  const bcast = (e: unknown) => broadcast(wsId, e && typeof e === "object" ? { ...(e as object), ws: wsId } : e);
 
   // --- access control: a valid token grants its role; otherwise the host
   // machine itself (loopback) is the owner, and everyone else is unauthorized.
@@ -582,6 +682,8 @@ async function api(
     const { writeFileSync, mkdirSync } = await import("node:fs");
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, body.content);
+    // keep any live CRDT replica of this file in step with the REST write
+    onFileWritten(wsId, body.path, body.content);
     const event = store.appendEvent("file.changed", { path: body.path });
     bcast(event);
     return sendJson(res, 200, { ok: true });
@@ -599,6 +701,7 @@ async function api(
       const { rmSync } = await import("node:fs");
       rmSync(file);
     }
+    onFileWritten(wsId, rel, null);
     bcast(store.appendEvent("file.changed", { path: rel, deleted: true }));
     return sendJson(res, 200, { ok: true });
   }
@@ -742,6 +845,18 @@ async function api(
   }
 
   return sendJson(res, 404, { error: "unknown endpoint" });
+}
+
+/** Structural check for a wire-format CRDT op (untrusted client input). */
+function isValidOp(op: unknown): op is Op {
+  if (!op || typeof op !== "object") return false;
+  const o = op as { t?: unknown; id?: { c?: unknown; s?: unknown }; origin?: unknown; ch?: unknown };
+  if (!o.id || typeof o.id.c !== "number" || typeof o.id.s !== "number") return false;
+  if (o.t === "del") return true;
+  if (o.t !== "ins" || typeof o.ch !== "string" || o.ch.length !== 1) return false;
+  if (o.origin === null) return true;
+  const origin = o.origin as { c?: unknown; s?: unknown } | undefined;
+  return !!origin && typeof origin.c === "number" && typeof origin.s === "number";
 }
 
 function safeJoin(root: string, rel: string): string {
