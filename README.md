@@ -53,7 +53,7 @@ is demoable with zero setup. Rebuild and watch every step go *cached*; the
 
 ```bash
 npm install
-npm run build        # compile TS -> dist/ and copy the web assets
+npm run build        # compile the server (tsc) + bundle the React UI (vite)
 npm link             # optional: put `loom` on your PATH
 ```
 
@@ -275,9 +275,17 @@ Loom serves a web app that reads and writes files, so access is locked down:
 
 ## Tech
 
-TypeScript (ESM). Inference via `@anthropic-ai/sdk` (model `claude-opus-4-8`,
-adaptive thinking). Coding agents via `@anthropic-ai/claude-agent-sdk` (`query()`,
-headless). `yaml` for config, `ws` for live updates. No database — just files.
+TypeScript (ESM) throughout. The CLI + server are Node; inference via
+`@anthropic-ai/sdk` (model `claude-opus-4-8`, adaptive thinking), coding agents
+via `@anthropic-ai/claude-agent-sdk` (`query()`, headless), `yaml` for config,
+`ws` for live updates. No database — just files.
+
+The **web UI is a React app** (`web/`) built with **Vite**, **Tailwind CSS**,
+and **shadcn/ui** components (Radix primitives). `npm run build` compiles the
+server (`tsc`) and bundles the UI (`vite build`) into `dist/web/public`, which
+the server serves as static assets. The browser shares the server's CRDT
+(`src/core/crdt.ts`) directly, so collaboration logic has a single source of
+truth.
 
 > The Anthropic SDKs are pinned to `latest` since they move quickly; pin exact
 > versions in `package.json` if you need reproducible installs.
@@ -285,8 +293,9 @@ headless). `yaml` for config, `ws` for live updates. No database — just files.
 ## Development
 
 ```bash
-npm run typecheck     # tsc --noEmit over src/
-npm run build         # compile + copy web assets
+npm run typecheck     # tsc --noEmit over src/ and web/
+npm run build         # compile the server + bundle the React UI
+npm run dev:web       # Vite dev server for the UI (proxy /api + /ws to a running `loom serve`)
 npm test              # node:test suite (via tsx) — no API key needed
 ```
 

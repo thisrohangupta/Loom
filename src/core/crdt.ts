@@ -217,3 +217,32 @@ export class CRDT {
     }
   }
 }
+
+/**
+ * Derive insert/delete ops by comparing old text to new text (a single
+ * contiguous replaced region, i.e. one caret edit). Applies them to `doc` and
+ * returns the ops to broadcast. Shared by the browser editor and tests.
+ */
+export function editsFromDiff(doc: CRDT, oldText: string, newText: string): Op[] {
+  let start = 0;
+  const maxPrefix = Math.min(oldText.length, newText.length);
+  while (start < maxPrefix && oldText[start] === newText[start]) start++;
+  let endOld = oldText.length;
+  let endNew = newText.length;
+  while (endOld > start && endNew > start && oldText[endOld - 1] === newText[endNew - 1]) {
+    endOld--;
+    endNew--;
+  }
+  const ops: Op[] = [];
+  // delete removed chars [start, endOld) from the right to keep indices stable
+  for (let i = endOld - 1; i >= start; i--) {
+    const op = doc.localDelete(i);
+    if (op) ops.push(op);
+  }
+  // insert added chars [start, endNew)
+  for (let i = start; i < endNew; i++) {
+    ops.push(doc.localInsert(i, newText[i]));
+  }
+  return ops;
+}
+
